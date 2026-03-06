@@ -1,13 +1,13 @@
-from trainer import AlphaZeroTrainer
-from CNN_alphazero import AlphaZeroNetwork
-from env_config import init_env
-import pickle
+try:
+    from scripts.self_play import main, run_self_play
+except ModuleNotFoundError as exc:
+    if exc.name != "scripts":
+        raise
+    from .scripts.self_play import main, run_self_play
 
-env = init_env(seed=10)
+__all__ = ["run_self_play", "main"]
 
-network = AlphaZeroNetwork(input_shape = (6, 21, 5), n_residual_layers=10, n_actions=5)
 
-trainer = AlphaZeroTrainer(network, env, 2.5, 5, 0.001, 32, 10)
-
-trainer.self_play()
+if __name__ == "__main__":
+    main()
 
