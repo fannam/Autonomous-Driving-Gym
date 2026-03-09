@@ -1,13 +1,13 @@
 # AlphaZero Module Structure
 
-This folder has been refactored into feature-based packages while keeping
-legacy entry files for backward compatibility.
+This folder is organized by feature packages.
 
 ## New structure
 
 - `core/`: search logic and state preprocessing
   - `mcts.py`: `MCTSNode`, `MCTS`
   - `policy.py`: `softmax_policy`
+  - `settings.py`: central runtime configs (input shape, grid, ego position, stack planes)
   - `state_stack.py`: `StateStackManager`, 8-layer and 9-layer stack helpers
 - `network/`: neural network definitions
   - `alphazero_network.py`: `AlphaZeroNetwork`
@@ -18,20 +18,14 @@ legacy entry files for backward compatibility.
 - `scripts/`: runnable script workflows
   - `self_play.py`, `infer.py`, `evaluate.py`, `playground_test.py`
 
-## Backward compatibility
-
-Original files in this folder are still available (`MCTS.py`, `trainer.py`,
-`CNN_alphazero.py`, `stack_of_planes.py`, etc.) and now re-export from the new
-modules.
-
 ## Typical usage
 
-Run legacy entrypoints (unchanged command style):
+Run scripts directly:
 
 ```bash
-python AlphaZero/self_play.py
-python AlphaZero/infer.py
-python AlphaZero/evaluate.py
+python AlphaZero/scripts/self_play.py
+python AlphaZero/scripts/infer.py
+python AlphaZero/scripts/evaluate.py
 ```
 
 Or use the new structured modules directly in code:
@@ -41,3 +35,16 @@ from AlphaZero.network.alphazero_network import AlphaZeroNetwork
 from AlphaZero.training.trainer import AlphaZeroTrainer
 from AlphaZero.environment.config import init_env
 ```
+
+## Configure Once
+
+Tune hardcoded defaults in one place:
+
+- `AlphaZero/core/settings.py`
+
+Examples:
+
+- `StackConfig.grid_size`, `StackConfig.ego_position`
+- `StackConfig.include_absolute_speed` (8-layer vs 9-layer stack)
+- `AlphaZeroConfig.n_actions`, `AlphaZeroConfig.n_residual_layers`
+- Presets: `SELF_PLAY_CONFIG`, `INFERENCE_CONFIG`, `EVALUATION_CONFIG`

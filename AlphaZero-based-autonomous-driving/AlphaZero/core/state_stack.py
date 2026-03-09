@@ -1,6 +1,13 @@
 import highway_env
 import numpy as np
 
+try:
+    from core.settings import StackConfig
+except ModuleNotFoundError as exc:
+    if exc.name != "core":
+        raise
+    from .settings import StackConfig
+
 
 class StateStackManager:
     """Build and update occupancy-grid stack tensors used by the network."""
@@ -88,23 +95,54 @@ def _parse_stack_update_args(args):
     )
 
 
+def init_state_stack(stack_config: StackConfig):
+    manager = StateStackManager(
+        history_length=stack_config.history_length,
+        include_absolute_speed=stack_config.include_absolute_speed,
+    )
+    return manager.init_stack(stack_config.grid_size, stack_config.ego_position)
+
+
+def update_state_stack(*args, stack_config: StackConfig):
+    env, stack, new_grid = _parse_stack_update_args(args)
+    manager = StateStackManager(
+        history_length=stack_config.history_length,
+        include_absolute_speed=stack_config.include_absolute_speed,
+    )
+    return manager.update_stack(stack=stack, new_grid=new_grid, env=env)
+
+
 def init_stack_of_grid(grid_size, ego_position, history_length=5):
-    manager = StateStackManager(history_length=history_length, include_absolute_speed=False)
-    return manager.init_stack(grid_size, ego_position)
+    return init_state_stack(
+        StackConfig(
+            grid_size=grid_size,
+            ego_position=ego_position,
+            history_length=history_length,
+            include_absolute_speed=False,
+        )
+    )
 
 
 def get_stack_of_grid(*args, history_length=5):
-    env, stack, new_grid = _parse_stack_update_args(args)
-    manager = StateStackManager(history_length=history_length, include_absolute_speed=False)
-    return manager.update_stack(stack=stack, new_grid=new_grid, env=env)
+    return update_state_stack(
+        *args,
+        stack_config=StackConfig(history_length=history_length, include_absolute_speed=False),
+    )
 
 
 def init_stack_of_grid_9_layers(grid_size, ego_position, history_length=5):
-    manager = StateStackManager(history_length=history_length, include_absolute_speed=True)
-    return manager.init_stack(grid_size, ego_position)
+    return init_state_stack(
+        StackConfig(
+            grid_size=grid_size,
+            ego_position=ego_position,
+            history_length=history_length,
+            include_absolute_speed=True,
+        )
+    )
 
 
 def get_stack_of_grid_9_layers(*args, history_length=5):
-    env, stack, new_grid = _parse_stack_update_args(args)
-    manager = StateStackManager(history_length=history_length, include_absolute_speed=True)
-    return manager.update_stack(stack=stack, new_grid=new_grid, env=env)
+    return update_state_stack(
+        *args,
+        stack_config=StackConfig(history_length=history_length, include_absolute_speed=True),
+    )

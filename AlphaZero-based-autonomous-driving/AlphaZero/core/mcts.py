@@ -6,24 +6,25 @@ import torch
 
 try:
     from core.policy import softmax_policy
-    from core.state_stack import get_stack_of_grid, init_stack_of_grid
+    from core.settings import StackConfig
+    from core.state_stack import init_state_stack, update_state_stack
 except ModuleNotFoundError as exc:
     if exc.name != "core":
         raise
     from .policy import softmax_policy
-    from .state_stack import get_stack_of_grid, init_stack_of_grid
+    from .settings import StackConfig
+    from .state_stack import init_state_stack, update_state_stack
 
-GRID_SIZE = (21, 5)
-EGO_POSITION = (4, 2)
 TERMINAL_TRUNCATED_VALUE = 1.0
 TERMINAL_CRASHED_VALUE = -1.0
 
 
 class MCTSNode:
-    def __init__(self, env, parent, parent_action, prior_prob):
+    def __init__(self, env, parent, parent_action, prior_prob, stack_config=None):
         self.env = copy.deepcopy(env)
         self.parent = parent
         self.parent_action = parent_action
+        self.stack_config = stack_config or StackConfig()
         self.children: Dict[int, "MCTSNode"] = {}
         self._n = 0
         self._W = 0
@@ -36,10 +37,15 @@ class MCTSNode:
         self.collision = 1 if ego_vehicle.crashed else 0
 
         if self.parent is None:
-            self.stack_of_planes = init_stack_of_grid(GRID_SIZE, EGO_POSITION)
+            self.stack_of_planes = init_state_stack(self.stack_config)
         else:
             observation = env.unwrapped.observation_type.observe()
-            self.stack_of_planes = get_stack_of_grid(env, self.parent.stack_of_planes, observation)
+            self.stack_of_planes = update_state_stack(
+                env,
+                self.parent.stack_of_planes,
+                observation,
+                stack_config=self.stack_config,
+            )
 
     def pucb_score(self, c_puct=2):
         q_value = 0 if self._n == 0 else self._W / self._n
@@ -57,7 +63,13 @@ class MCTSNode:
             if action not in self.children and prob > 0:
                 next_env = copy.deepcopy(self.env)
                 next_env.step(action)
-                self.children[action] = MCTSNode(next_env, self, action, prob)
+                self.children[action] = MCTSNode(
+                    next_env,
+                    self,
+                    action,
+                    prob,
+                    stack_config=self.stack_config,
+                )
 
     def is_leaf(self):
         return self.children == {}

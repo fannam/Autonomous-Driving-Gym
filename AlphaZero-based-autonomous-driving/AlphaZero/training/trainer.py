@@ -5,16 +5,14 @@ from torch.utils.data import DataLoader, TensorDataset
 
 try:
     from core.mcts import MCTS, MCTSNode
-    from core.state_stack import get_stack_of_grid, init_stack_of_grid
+    from core.settings import StackConfig
+    from core.state_stack import init_state_stack, update_state_stack
 except ModuleNotFoundError as exc:
     if exc.name != "core":
         raise
     from ..core.mcts import MCTS, MCTSNode
-    from ..core.state_stack import get_stack_of_grid, init_stack_of_grid
-
-GRID_SIZE = (21, 5)
-EGO_POSITION = (4, 2)
-N_ACTIONS = 5
+    from ..core.settings import StackConfig
+    from ..core.state_stack import init_state_stack, update_state_stack
 
 
 class AlphaZeroTrainer:
@@ -27,6 +25,8 @@ class AlphaZeroTrainer:
         learning_rate=0.001,
         batch_size=32,
         epochs=10,
+        stack_config=None,
+        n_actions=5,
     ):
         self.network = network
         self.env = env
@@ -35,6 +35,8 @@ class AlphaZeroTrainer:
         self.optimizer = optim.Adam(self.network.parameters(), lr=learning_rate)
         self.batch_size = batch_size
         self.epochs = epochs
+        self.stack_config = stack_config or StackConfig()
+        self.n_actions = n_actions
         self.training_data = []
         self.action_list = []
 
@@ -46,7 +48,7 @@ class AlphaZeroTrainer:
             mcts.rollout()
 
     def _compute_action_probs(self, root_node):
-        action_probs = {action: 0.0 for action in range(N_ACTIONS)}
+        action_probs = {action: 0.0 for action in range(self.n_actions)}
         for action, child in root_node.children.items():
             action_probs[action] = child._n / (root_node._n - 1)
         return action_probs
@@ -56,10 +58,16 @@ class AlphaZeroTrainer:
 
     def self_play(self, seed=21):
         self.env.reset(seed=seed)
-        state = init_stack_of_grid(GRID_SIZE, EGO_POSITION)
+        state = init_state_stack(self.stack_config)
         done = self._is_done()
 
-        root_node = MCTSNode(self.env, parent=None, parent_action=None, prior_prob=1.0)
+        root_node = MCTSNode(
+            self.env,
+            parent=None,
+            parent_action=None,
+            prior_prob=1.0,
+            stack_config=self.stack_config,
+        )
         mcts = MCTS(
             root=root_node,
             network=self.network,
@@ -70,7 +78,7 @@ class AlphaZeroTrainer:
 
         while not done:
             observation = self.env.unwrapped.observation_type.observe()
-            state = get_stack_of_grid(self.env, state, observation)
+            state = update_state_stack(self.env, state, observation, stack_config=self.stack_config)
             self._run_rollouts(mcts)
 
             action_probs = self._compute_action_probs(root_node)

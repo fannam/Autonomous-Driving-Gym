@@ -4,6 +4,11 @@ __all__ = [
     "EnvironmentFactory",
     "MCTS",
     "MCTSNode",
+    "StackConfig",
+    "AlphaZeroConfig",
+    "SELF_PLAY_CONFIG",
+    "INFERENCE_CONFIG",
+    "EVALUATION_CONFIG",
     "init_env",
 ]
 
@@ -33,4 +38,26 @@ def __getattr__(name):
         from .core.mcts import MCTSNode
 
         return MCTSNode
+    if name in {
+        "StackConfig",
+        "AlphaZeroConfig",
+        "SELF_PLAY_CONFIG",
+        "INFERENCE_CONFIG",
+        "EVALUATION_CONFIG",
+    }:
+        from .core.settings import (
+            AlphaZeroConfig,
+            EVALUATION_CONFIG,
+            INFERENCE_CONFIG,
+            SELF_PLAY_CONFIG,
+            StackConfig,
+        )
+
+        return {
+            "StackConfig": StackConfig,
+            "AlphaZeroConfig": AlphaZeroConfig,
+            "SELF_PLAY_CONFIG": SELF_PLAY_CONFIG,
+            "INFERENCE_CONFIG": INFERENCE_CONFIG,
+            "EVALUATION_CONFIG": EVALUATION_CONFIG,
+        }[name]
     raise AttributeError(f"module 'AlphaZero' has no attribute '{name}'")
