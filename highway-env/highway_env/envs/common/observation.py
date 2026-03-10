@@ -498,6 +498,349 @@ class OccupancyGridObservation(ObservationType):
                             self.grid[layer_index, i, j] = 1
 
 
+class DetailedOccupancyGridObservation(OccupancyGridObservation):
+    """
+    A richer occupancy-grid encoding that preserves more vehicle information.
+
+    Differences vs `OccupancyGridObservation`:
+    - Vehicles are rasterized as rectangles using their footprint (LENGTH/WIDTH), not a single cell.
+    - Additional dynamic channels are available (speed, heading, distance, TTC risk).
+    - Near vehicles overwrite far vehicles on overlap, so local details are preserved.
+    - `on_road` can represent full lane area (default) instead of only centerlines.
+    - Optional `on_road_soft_mode` encodes area occupancy ratio per cell for smoother road masks.
+    - `on_lane` encodes lane boundaries to preserve lane-limit information.
+    """
+
+    FEATURES: list[str] = [
+        "presence",
+        "vx",
+        "vy",
+        "speed",
+        "cos_h",
+        "sin_h",
+        "distance",
+        "ttc",
+        "on_lane",
+        "on_road",
+    ]
+
+    def __init__(
+        self,
+        env: AbstractEnv,
+        features: list[str] | None = None,
+        grid_size: tuple[tuple[float, float], tuple[float, float]] | None = None,
+        grid_step: tuple[float, float] | None = None,
+        features_range: dict[str, list[float]] | None = None,
+        absolute: bool = False,
+        align_to_vehicle_axes: bool = False,
+        clip: bool = True,
+        as_image: bool = False,
+        include_ego_vehicle: bool = True,
+        on_road_mode: str = "area",
+        on_road_soft_mode: bool = False,
+        on_road_subsamples: int = 3,
+        presence_subsamples: int = 3,
+        vehicle_footprint: bool = True,
+        footprint_margin: float = 1.0,
+        ttc_horizon: float = 10.0,
+        distance_normalization: float = 100.0,
+        **kwargs: dict,
+    ) -> None:
+        super().__init__(
+            env=env,
+            features=features if features is not None else self.FEATURES,
+            grid_size=grid_size,
+            grid_step=grid_step,
+            features_range=features_range,
+            absolute=absolute,
+            align_to_vehicle_axes=align_to_vehicle_axes,
+            clip=clip,
+            as_image=as_image,
+            **kwargs,
+        )
+        if on_road_mode not in {"area", "centerline"}:
+            raise ValueError(
+                f"Unsupported on_road_mode={on_road_mode}. "
+                "Use 'area' or 'centerline'."
+            )
+        if on_road_subsamples < 1:
+            raise ValueError("on_road_subsamples must be >= 1.")
+        if presence_subsamples < 1:
+            raise ValueError("presence_subsamples must be >= 1.")
+        self.include_ego_vehicle = include_ego_vehicle
+        self.on_road_mode = on_road_mode
+        self.on_road_soft_mode = on_road_soft_mode
+        self.on_road_subsamples = int(on_road_subsamples)
+        self.presence_subsamples = int(presence_subsamples)
+        self.vehicle_footprint = vehicle_footprint
+        self.footprint_margin = footprint_margin
+        self.ttc_horizon = ttc_horizon
+        self.distance_normalization = distance_normalization
+
+    def observe(self) -> np.ndarray:
+        if not self.env.road:
+            return np.zeros(self.space().shape)
+        if self.absolute:
+            raise NotImplementedError()
+
+        self.grid.fill(0.0)
+        if "on_lane" in self.features:
+            self.fill_lane_boundaries_layer(self.features.index("on_lane"))
+        if "on_road" in self.features:
+            on_road_layer = self.features.index("on_road")
+            if self.on_road_mode == "area":
+                if self.on_road_soft_mode:
+                    self.fill_road_layer_by_cell_soft(on_road_layer)
+                else:
+                    self.fill_road_layer_by_cell(on_road_layer)
+            else:
+                self.fill_road_layer_by_lanes(on_road_layer)
+
+        vehicles = (
+            list(self.env.road.vehicles)
+            if self.include_ego_vehicle
+            else [v for v in self.env.road.vehicles if v is not self.observer_vehicle]
+        )
+        # Paint far vehicles first, near vehicles last, so nearby details dominate overlap.
+        vehicles.sort(
+            key=lambda vehicle: np.linalg.norm(vehicle.position - self.observer_vehicle.position),
+            reverse=True,
+        )
+
+        for vehicle in vehicles:
+            rel = vehicle.to_dict(self.observer_vehicle)
+            center = self._to_grid_frame(np.array([rel["x"], rel["y"]], dtype=np.float32))
+            heading = (
+                vehicle.heading - self.observer_vehicle.heading
+                if self.align_to_vehicle_axes
+                else vehicle.heading
+            )
+            cell_coverages = self._vehicle_cell_coverages(
+                center_x=float(center[0]),
+                center_y=float(center[1]),
+                heading=heading,
+                length=vehicle.LENGTH * self.footprint_margin,
+                width=vehicle.WIDTH * self.footprint_margin,
+            )
+            values = self._feature_values(
+                vehicle=vehicle,
+                rel=rel,
+                heading=heading,
+                is_ego=vehicle is self.observer_vehicle,
+            )
+            for (i, j), coverage in cell_coverages.items():
+                for layer, feature in enumerate(self.features):
+                    if feature in {"on_road", "on_lane"}:
+                        continue
+                    if feature == "presence":
+                        self.grid[layer, i, j] = max(self.grid[layer, i, j], coverage)
+                    else:
+                        self.grid[layer, i, j] = values.get(feature, 0.0)
+
+        obs = self.grid
+        if self.clip:
+            obs = np.clip(obs, -1, 1)
+        if self.as_image:
+            obs = ((np.clip(obs, -1, 1) + 1) / 2 * 255).astype(np.uint8)
+        return np.nan_to_num(obs).astype(self.space().dtype)
+
+    def fill_lane_boundaries_layer(
+        self, layer_index: int, lane_perception_distance: float = 100.0
+    ) -> None:
+        """
+        Encode lane boundaries (left/right limits) into a dedicated grid layer.
+
+        A value of 1 indicates that the grid cell belongs to a lane boundary sample.
+        """
+        lane_waypoints_spacing = np.amin(self.grid_step)
+        road = self.env.road
+
+        for _from in road.network.graph.keys():
+            for _to in road.network.graph[_from].keys():
+                for lane in road.network.graph[_from][_to]:
+                    origin, _ = lane.local_coordinates(self.observer_vehicle.position)
+                    waypoints = np.arange(
+                        origin - lane_perception_distance,
+                        origin + lane_perception_distance,
+                        lane_waypoints_spacing,
+                    ).clip(0, lane.length)
+                    for waypoint in waypoints:
+                        half_width = 0.5 * lane.width_at(waypoint)
+                        for lateral in (-half_width, half_width):
+                            cell = self.pos_to_index(lane.position(waypoint, lateral))
+                            if (
+                                0 <= cell[0] < self.grid.shape[-2]
+                                and 0 <= cell[1] < self.grid.shape[-1]
+                            ):
+                                self.grid[layer_index, cell[0], cell[1]] = 1.0
+
+    def fill_road_layer_by_cell_soft(self, layer_index: int) -> None:
+        """
+        Soft road occupancy: each cell stores ratio of sampled points that are on-road.
+
+        This produces fractional values in [0, 1] for partially covered cells.
+        """
+        road = self.env.road
+        lanes = road.network.lanes_list()
+        n = self.on_road_subsamples
+        offset_x = (np.arange(n, dtype=np.float32) + 0.5) / n * self.grid_step[0]
+        offset_y = (np.arange(n, dtype=np.float32) + 0.5) / n * self.grid_step[1]
+        total_samples = float(n * n)
+
+        for i, j in product(range(self.grid.shape[-2]), range(self.grid.shape[-1])):
+            x0 = i * self.grid_step[0] + self.grid_size[0, 0]
+            y0 = j * self.grid_step[1] + self.grid_size[1, 0]
+            on_count = 0
+
+            for dx in offset_x:
+                for dy in offset_y:
+                    local_point = np.array([x0 + dx, y0 + dy], dtype=np.float32)
+                    world_point = self._grid_to_world_frame(local_point)
+                    if any(lane.on_lane(world_point) for lane in lanes):
+                        on_count += 1
+
+            self.grid[layer_index, i, j] = on_count / total_samples
+
+    def _to_grid_frame(self, position: np.ndarray) -> np.ndarray:
+        """
+        Convert a relative world-frame position to the grid frame.
+        """
+        if self.align_to_vehicle_axes:
+            c, s = np.cos(self.observer_vehicle.heading), np.sin(
+                self.observer_vehicle.heading
+            )
+            return np.array([[c, s], [-s, c]]) @ position
+        return position
+
+    def _grid_center(self, i: int, j: int) -> tuple[float, float]:
+        return (
+            (i + 0.5) * self.grid_step[0] + self.grid_size[0, 0],
+            (j + 0.5) * self.grid_step[1] + self.grid_size[1, 0],
+        )
+
+    def _grid_to_world_frame(self, local_position: np.ndarray) -> np.ndarray:
+        if self.align_to_vehicle_axes:
+            c, s = np.cos(-self.observer_vehicle.heading), np.sin(
+                -self.observer_vehicle.heading
+            )
+            local_position = np.array([[c, s], [-s, c]]) @ local_position
+        return local_position + self.observer_vehicle.position
+
+    def _coords_to_index(self, x: float, y: float) -> tuple[int, int]:
+        return (
+            int(np.floor((x - self.grid_size[0, 0]) / self.grid_step[0])),
+            int(np.floor((y - self.grid_size[1, 0]) / self.grid_step[1])),
+        )
+
+    def _vehicle_cell_coverages(
+        self,
+        center_x: float,
+        center_y: float,
+        heading: float,
+        length: float,
+        width: float,
+    ) -> dict[tuple[int, int], float]:
+        if not self.vehicle_footprint:
+            i, j = self._coords_to_index(center_x, center_y)
+            if 0 <= i < self.grid.shape[-2] and 0 <= j < self.grid.shape[-1]:
+                return {(i, j): 1.0}
+            return {}
+
+        cos_h, sin_h = np.cos(heading), np.sin(heading)
+        half_l, half_w = 0.5 * length, 0.5 * width
+        extent_x = abs(cos_h) * half_l + abs(sin_h) * half_w
+        extent_y = abs(sin_h) * half_l + abs(cos_h) * half_w
+
+        i_min, j_min = self._coords_to_index(center_x - extent_x, center_y - extent_y)
+        i_max, j_max = self._coords_to_index(center_x + extent_x, center_y + extent_y)
+        i_min = max(0, i_min)
+        j_min = max(0, j_min)
+        i_max = min(self.grid.shape[-2] - 1, i_max)
+        j_max = min(self.grid.shape[-1] - 1, j_max)
+
+        cell_coverages = {}
+        for i in range(i_min, i_max + 1):
+            for j in range(j_min, j_max + 1):
+                coverage = self._cell_overlap_ratio(
+                    center_x=center_x,
+                    center_y=center_y,
+                    cos_h=cos_h,
+                    sin_h=sin_h,
+                    half_l=half_l,
+                    half_w=half_w,
+                    i=i,
+                    j=j,
+                )
+                if coverage > 0.0:
+                    cell_coverages[(i, j)] = coverage
+        return cell_coverages
+
+    def _cell_overlap_ratio(
+        self,
+        center_x: float,
+        center_y: float,
+        cos_h: float,
+        sin_h: float,
+        half_l: float,
+        half_w: float,
+        i: int,
+        j: int,
+    ) -> float:
+        """
+        Approximate vehicle-cell overlap using stratified supersampling.
+
+        A fully covered cell gets value 1, partial coverage gets value in (0, 1).
+        """
+        x0 = i * self.grid_step[0] + self.grid_size[0, 0]
+        y0 = j * self.grid_step[1] + self.grid_size[1, 0]
+        n = self.presence_subsamples
+        sample_x = x0 + (np.arange(n, dtype=np.float32) + 0.5) / n * self.grid_step[0]
+        sample_y = y0 + (np.arange(n, dtype=np.float32) + 0.5) / n * self.grid_step[1]
+        xx, yy = np.meshgrid(sample_x, sample_y, indexing="ij")
+
+        dx = xx - center_x
+        dy = yy - center_y
+        local_long = cos_h * dx + sin_h * dy
+        local_lat = -sin_h * dx + cos_h * dy
+        inside = (np.abs(local_long) <= half_l) & (np.abs(local_lat) <= half_w)
+        return float(np.mean(inside))
+
+    def _feature_values(
+        self, vehicle: Vehicle, rel: dict, heading: float, is_ego: bool
+    ) -> dict[str, float]:
+        rel_pos = np.array([rel["x"], rel["y"]], dtype=np.float32)
+        rel_vel = np.array([rel["vx"], rel["vy"]], dtype=np.float32)
+        rel_speed = float(np.linalg.norm(rel_vel))
+        distance = float(np.linalg.norm(rel_pos))
+        ttc_risk = 0.0 if is_ego else self._ttc_risk(rel_pos, rel_vel)
+
+        return {
+            "presence": 1.0,
+            "x": float(np.clip(rel["x"] / self.distance_normalization, -1, 1)),
+            "y": float(np.clip(rel["y"] / self.distance_normalization, -1, 1)),
+            "vx": float(np.clip(rel["vx"] / (2 * Vehicle.MAX_SPEED), -1, 1)),
+            "vy": float(np.clip(rel["vy"] / (2 * Vehicle.MAX_SPEED), -1, 1)),
+            "speed": float(np.clip(rel_speed / (2 * Vehicle.MAX_SPEED), 0, 1)),
+            "heading": float(np.clip(heading / np.pi, -1, 1)),
+            "cos_h": float(np.cos(heading)),
+            "sin_h": float(np.sin(heading)),
+            "long_off": float(np.clip(rel.get("long_off", 0.0) / self.distance_normalization, -1, 1)),
+            "lat_off": float(np.clip(rel.get("lat_off", 0.0) / self.distance_normalization, -1, 1)),
+            "distance": float(np.clip(distance / self.distance_normalization, 0, 1)),
+            "ttc": ttc_risk,
+        }
+
+    def _ttc_risk(self, rel_pos: np.ndarray, rel_vel: np.ndarray) -> float:
+        distance = float(np.linalg.norm(rel_pos))
+        if distance < 1e-6:
+            return 1.0
+        closing_speed = -float(np.dot(rel_pos, rel_vel)) / distance
+        if closing_speed <= 1e-3:
+            return 0.0
+        ttc = distance / closing_speed
+        return float(np.clip(1.0 - ttc / self.ttc_horizon, 0.0, 1.0))
+
+
 class KinematicsGoalObservation(KinematicObservation):
     def __init__(self, env: AbstractEnv, scales: list[float], **kwargs: dict) -> None:
         self.scales = np.array(scales)
@@ -775,6 +1118,8 @@ def observation_factory(env: AbstractEnv, config: dict) -> ObservationType:
         return KinematicObservation(env, **config)
     elif config["type"] == "OccupancyGrid":
         return OccupancyGridObservation(env, **config)
+    elif config["type"] == "DetailedOccupancyGrid":
+        return DetailedOccupancyGridObservation(env, **config)
     elif config["type"] == "KinematicsGoal":
         return KinematicsGoalObservation(env, **config)
     elif config["type"] == "GrayscaleObservation":

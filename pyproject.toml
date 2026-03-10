@@ -1,0 +1,27 @@
+[project]
+name = "autonomous-driving-gym"
+version = "0.1.0"
+description = "Autonomous driving experiments with AlphaZero and highway-env"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "gymnasium>=1.2.3",
+    "highway-env",
+    "numpy>=2.4.2",
+    "torch>=2.10.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv]
+package = false
+
+[tool.uv.workspace]
+members = [
+    "highway-env",
+]
+
+[tool.uv.sources]
+highway-env = { workspace = true, editable = true }

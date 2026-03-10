@@ -7,22 +7,29 @@ import numpy as np
 
 def run_action_playground(seed=70, action_list=None):
     if action_list is None:
-        action_list = [2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 3, 1, 1]
+        # For 5x5 action grid, id=12 is roughly (acc=0, steer=0).
+        action_list = [12, 12, 12, 12, 12, 17, 17, 12, 7, 7, 12]
 
     env_config = {
         "observation": {
-            "type": "OccupancyGrid",
+            "type": "DetailedOccupancyGrid",
             "vehicles_count": 50,
-            "features": ["presence", "on_road"],
+            "features": ["presence", "on_lane", "on_road"],
             "features_range": {
                 "x": [-100, 100],
                 "y": [-100, 100],
                 "vx": [-30, 30],
                 "vy": [-20, 20],
             },
-            "grid_size": [[-20, 85], [-12.5, 12.5]],
-            "grid_step": [5, 5],
+            "grid_size": [[-50, 50], [-12, 12]],
+            "grid_step": [1.0, 1.0],
             "absolute": False,
+            "align_to_vehicle_axes": True,
+            "include_ego_vehicle": True,
+            "on_road_mode": "area",
+            "presence_subsamples": 5,
+            "on_road_soft_mode": True,
+            "on_road_subsamples": 3,
         },
         "collision_reward": 0,
         "left_lane_constraint": 0,
@@ -31,10 +38,13 @@ def run_action_playground(seed=70, action_list=None):
         "lanes_count": 4,
         "vehicles_density": 1.6 + 2 * np.random.rand(),
         "action": {
-            "type": "DiscreteMetaAction",
-            "target_speeds": np.linspace(15, 30, 4),
+            "type": "DiscreteAction",
+            "longitudinal": True,
+            "lateral": True,
+            "actions_per_axis": 5,
+            "acceleration_range": [-5.0, 5.0],
+            "steering_range": [-np.pi / 6, np.pi / 6],
         },
-        "reward_speed_range": np.array([15, 30]),
         "duration": 12,
     }
 

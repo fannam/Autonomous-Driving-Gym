@@ -6,13 +6,11 @@ from torch.utils.data import DataLoader, TensorDataset
 try:
     from core.mcts import MCTS, MCTSNode
     from core.settings import StackConfig
-    from core.state_stack import init_state_stack, update_state_stack
 except ModuleNotFoundError as exc:
     if exc.name != "core":
         raise
     from ..core.mcts import MCTS, MCTSNode
     from ..core.settings import StackConfig
-    from ..core.state_stack import init_state_stack, update_state_stack
 
 
 class AlphaZeroTrainer:
@@ -27,6 +25,7 @@ class AlphaZeroTrainer:
         epochs=10,
         stack_config=None,
         n_actions=5,
+        verbose=True,
     ):
         self.network = network
         self.env = env
@@ -37,6 +36,7 @@ class AlphaZeroTrainer:
         self.epochs = epochs
         self.stack_config = stack_config or StackConfig()
         self.n_actions = n_actions
+        self.verbose = verbose
         self.training_data = []
         self.action_list = []
 
@@ -49,8 +49,28 @@ class AlphaZeroTrainer:
 
     def _compute_action_probs(self, root_node):
         action_probs = {action: 0.0 for action in range(self.n_actions)}
+        total_child_visits = sum(child._n for child in root_node.children.values())
+
+        if total_child_visits <= 0:
+            if root_node.children:
+                uniform_prob = 1.0 / len(root_node.children)
+                for action in root_node.children:
+                    action_probs[action] = uniform_prob
+                return action_probs
+
+            available_actions = root_node.available_actions
+            if available_actions:
+                uniform_prob = 1.0 / len(available_actions)
+                for action in available_actions:
+                    if action in action_probs:
+                        action_probs[action] = uniform_prob
+                return action_probs
+
+            uniform_prob = 1.0 / self.n_actions
+            return {action: uniform_prob for action in range(self.n_actions)}
+
         for action, child in root_node.children.items():
-            action_probs[action] = child._n / (root_node._n - 1)
+            action_probs[action] = child._n / total_child_visits
         return action_probs
 
     def _estimate_root_value(self, root_node):
@@ -58,7 +78,6 @@ class AlphaZeroTrainer:
 
     def self_play(self, seed=21):
         self.env.reset(seed=seed)
-        state = init_state_stack(self.stack_config)
         done = self._is_done()
 
         root_node = MCTSNode(
@@ -77,8 +96,8 @@ class AlphaZeroTrainer:
         )
 
         while not done:
-            observation = self.env.unwrapped.observation_type.observe()
-            state = update_state_stack(self.env, state, observation, stack_config=self.stack_config)
+            root_node.ensure_stack_of_planes()
+            state = root_node.stack_of_planes
             self._run_rollouts(mcts)
 
             action_probs = self._compute_action_probs(root_node)
@@ -90,16 +109,31 @@ class AlphaZeroTrainer:
             action = max(action_probs, key=action_probs.get)
             self.action_list.append(action)
             self.env.step(action)
-            print(f"action chosen: {action}")
+            if self.verbose:
+                print(f"action chosen: {action}")
 
             if action in root_node.children:
                 mcts.move_to_new_root(action)
                 root_node = mcts.root
             else:
-                raise ValueError("Action khong ton tai trong cay MCTS.")
+                root_node = MCTSNode(
+                    self.env,
+                    parent=None,
+                    parent_action=None,
+                    prior_prob=1.0,
+                    stack_config=self.stack_config,
+                )
+                mcts = MCTS(
+                    root=root_node,
+                    network=self.network,
+                    use_cuda=False,
+                    c_puct=self.c_puct,
+                    n_simulations=self.n_simulations,
+                )
 
             done = self._is_done()
-        print("end self-play")
+        if self.verbose:
+            print("end self-play")
 
     def _build_training_tensors(self):
         states, policies, values = zip(*self.training_data)
@@ -109,6 +143,7 @@ class AlphaZeroTrainer:
         return state_tensor, policy_tensor, value_tensor
 
     def train(self):
+        self.network.train()
         states, policies, values = self._build_training_tensors()
         dataset = TensorDataset(states, policies, values)
         dataloader = DataLoader(dataset, batch_size=self.batch_size, shuffle=True)
