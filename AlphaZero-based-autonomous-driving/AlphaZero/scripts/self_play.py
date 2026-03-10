@@ -1,3 +1,5 @@
+import argparse
+
 try:
     from core.settings import SELF_PLAY_CONFIG
     from environment.config import init_env
@@ -68,8 +70,38 @@ def run_self_play(
     return trainer
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(description="Run single-process AlphaZero self-play.")
+    parser.add_argument("--env-seed", type=int, default=10)
+    parser.add_argument("--self-play-seed", type=int, default=21)
+    parser.add_argument(
+        "--device",
+        type=str,
+        default="auto",
+        help="Torch device: auto|cpu|cuda|cuda:0",
+    )
+    parser.add_argument("--n-residual-layers", type=int, default=None)
+    parser.add_argument("--c-puct", type=float, default=None)
+    parser.add_argument("--n-simulations", type=int, default=None)
+    parser.add_argument("--learning-rate", type=float, default=None)
+    parser.add_argument("--batch-size", type=int, default=None)
+    parser.add_argument("--epochs", type=int, default=None)
+    return parser.parse_args()
+
+
 def main():
-    run_self_play()
+    args = parse_args()
+    run_self_play(
+        env_seed=args.env_seed,
+        self_play_seed=args.self_play_seed,
+        n_residual_layers=args.n_residual_layers,
+        c_puct=args.c_puct,
+        n_simulations=args.n_simulations,
+        learning_rate=args.learning_rate,
+        batch_size=args.batch_size,
+        epochs=args.epochs,
+        device=args.device,
+    )
 
 
 if __name__ == "__main__":
