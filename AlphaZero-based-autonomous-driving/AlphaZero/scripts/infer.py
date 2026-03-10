@@ -20,7 +20,7 @@ except ModuleNotFoundError as exc:
 DEFAULT_CONFIG = INFERENCE_CONFIG
 
 
-def run_inference(model_path=None, seed=28, config=None):
+def run_inference(model_path=None, seed=28, config=None, device="auto"):
     if config is None:
         config = DEFAULT_CONFIG
     if model_path is None:
@@ -42,6 +42,7 @@ def run_inference(model_path=None, seed=28, config=None):
         epochs=config.epochs,
         stack_config=config.stack,
         n_actions=config.n_actions,
+        device=device,
     )
     trainer.load_model(model_path)
     state = init_state_stack(config.stack)
@@ -49,7 +50,7 @@ def run_inference(model_path=None, seed=28, config=None):
     while not env.unwrapped._is_terminated() and not env.unwrapped._is_truncated():
         observation = env.unwrapped.observation_type.observe()
         state = update_state_stack(env, state, observation, stack_config=config.stack)
-        state_tensor = torch.tensor(state, dtype=torch.float32).unsqueeze(0)
+        state_tensor = torch.tensor(state, dtype=torch.float32).unsqueeze(0).to(trainer.device)
         predicted_policy, _ = trainer.network(state_tensor)
         available_actions = env.unwrapped.get_available_actions()
         predicted_policy = {action: prob for action, prob in enumerate(predicted_policy.squeeze().tolist())}

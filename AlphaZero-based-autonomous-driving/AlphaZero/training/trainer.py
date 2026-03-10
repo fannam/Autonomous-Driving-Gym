@@ -13,6 +13,16 @@ except ModuleNotFoundError as exc:
     from ..core.settings import StackConfig
 
 
+def _resolve_training_device(device) -> torch.device:
+    if device is None or str(device).lower() == "auto":
+        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    resolved_device = torch.device(device)
+    if resolved_device.type == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError("Requested CUDA device, but CUDA is not available.")
+    return resolved_device
+
+
 class AlphaZeroTrainer:
     def __init__(
         self,
@@ -26,8 +36,10 @@ class AlphaZeroTrainer:
         stack_config=None,
         n_actions=5,
         verbose=True,
+        device="auto",
     ):
-        self.network = network
+        self.device = _resolve_training_device(device)
+        self.network = network.to(self.device)
         self.env = env
         self.c_puct = c_puct
         self.n_simulations = n_simulations
@@ -91,7 +103,7 @@ class AlphaZeroTrainer:
         mcts = MCTS(
             root=root_node,
             network=self.network,
-            use_cuda=False,
+            device=self.device,
             c_puct=self.c_puct,
             n_simulations=self.n_simulations,
         )
@@ -136,7 +148,7 @@ class AlphaZeroTrainer:
                 mcts = MCTS(
                     root=root_node,
                     network=self.network,
-                    use_cuda=False,
+                    device=self.device,
                     c_puct=self.c_puct,
                     n_simulations=self.n_simulations,
                 )
@@ -160,6 +172,9 @@ class AlphaZeroTrainer:
 
         for epoch in range(self.epochs):
             for state_batch, policy_batch, value_batch in dataloader:
+                state_batch = state_batch.to(self.device, non_blocking=self.device.type != "cpu")
+                policy_batch = policy_batch.to(self.device, non_blocking=self.device.type != "cpu")
+                value_batch = value_batch.to(self.device, non_blocking=self.device.type != "cpu")
                 predicted_policy, predicted_value = self.network(state_batch)
                 policy_loss = F.cross_entropy(predicted_policy, policy_batch)
                 value_loss = F.mse_loss(predicted_value, value_batch)
@@ -175,4 +190,5 @@ class AlphaZeroTrainer:
         torch.save(self.network.state_dict(), path)
 
     def load_model(self, path="alphazero_model.pth"):
-        self.network.load_state_dict(torch.load(path, map_location=torch.device("cpu")))
+        self.network.load_state_dict(torch.load(path, map_location=self.device))
+        self.network.to(self.device)

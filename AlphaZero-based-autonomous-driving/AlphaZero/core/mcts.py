@@ -19,6 +19,19 @@ TERMINAL_TRUNCATED_VALUE = 1.0
 TERMINAL_CRASHED_VALUE = -1.0
 
 
+def _resolve_mcts_device(device=None, use_cuda=False) -> torch.device:
+    if device is not None:
+        resolved_device = torch.device(device)
+        if resolved_device.type == "cuda" and not torch.cuda.is_available():
+            raise RuntimeError("Requested CUDA device, but CUDA is not available.")
+        return resolved_device
+
+    if use_cuda and torch.cuda.is_available():
+        return torch.device("cuda")
+
+    return torch.device("cpu")
+
+
 def _collect_available_actions(env) -> tuple[int, ...]:
     """
     Return available discrete action ids for the current env state.
@@ -144,12 +157,12 @@ class MCTSNode:
 
 
 class MCTS:
-    def __init__(self, root, network, use_cuda=False, c_puct=5, n_simulations=10):
+    def __init__(self, root, network, use_cuda=False, device=None, c_puct=5, n_simulations=10):
         self.c_puct = c_puct
         self.root = root
-        self._network = network.cuda() if use_cuda else network
+        self._device = _resolve_mcts_device(device=device, use_cuda=use_cuda)
+        self._network = network.to(self._device)
         self._n_simulations = n_simulations
-        self._device = next(self._network.parameters()).device
         if self._network.training:
             self._network.eval()
 
@@ -161,9 +174,10 @@ class MCTS:
 
     def _predict_policy_value(self, leaf_node):
         leaf_node.ensure_stack_of_planes()
-        state_tensor = torch.from_numpy(leaf_node.stack_of_planes).unsqueeze(0)
-        if self._device.type != "cpu":
-            state_tensor = state_tensor.to(device=self._device, non_blocking=True)
+        state_tensor = torch.from_numpy(leaf_node.stack_of_planes).unsqueeze(0).to(
+            device=self._device,
+            non_blocking=self._device.type != "cpu",
+        )
 
         with torch.inference_mode():
             predicted_policy, predicted_value = self._network(state_tensor)

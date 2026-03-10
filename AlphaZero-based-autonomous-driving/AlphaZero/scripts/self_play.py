@@ -24,6 +24,7 @@ def run_self_play(
     batch_size=None,
     epochs=None,
     stack_config=None,
+    device="auto",
 ):
     config = SELF_PLAY_CONFIG
     if input_shape is None:
@@ -61,6 +62,7 @@ def run_self_play(
         epochs=epochs,
         stack_config=stack_config,
         n_actions=n_actions,
+        device=device,
     )
     trainer.self_play(seed=self_play_seed)
     return trainer

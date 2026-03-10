@@ -113,6 +113,7 @@ def _run_worker(task: dict) -> dict:
         stack_config=task["stack_config"],
         n_actions=int(task["n_actions"]),
         verbose=False,
+        device=task["device"],
     )
 
     worker_id = int(task["worker_id"])
@@ -129,7 +130,8 @@ def _run_worker(task: dict) -> dict:
 
     print(
         f"[worker {worker_id}] pid={os.getpid()} "
-        f"episodes={episodes_per_worker} n_simulations={task['n_simulations']}",
+        f"episodes={episodes_per_worker} n_simulations={task['n_simulations']} "
+        f"device={trainer.device}",
         flush=True,
     )
 
@@ -242,6 +244,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model-path", default=None, help="Optional model checkpoint (.pth).")
     parser.add_argument("--n-simulations", type=int, default=5)
     parser.add_argument("--c-puct", type=float, default=2.5)
+    parser.add_argument(
+        "--device",
+        type=str,
+        default="auto",
+        help="Torch device for neural inference/training in workers: auto|cpu|cuda|cuda:0",
+    )
     parser.add_argument("--n-residual-layers", type=int, default=10)
     parser.add_argument("--torch-threads-per-worker", type=int, default=1)
     parser.add_argument(
@@ -304,6 +312,7 @@ def main():
     print(f"env_id={args.env_id}")
     print(f"workers={args.workers}, episodes_per_worker={args.episodes_per_worker}")
     print(f"n_actions={config.n_actions}, n_simulations={args.n_simulations}")
+    print(f"device={args.device}")
     print(f"model_path={model_path}")
     print(f"output_dir={output_dir}")
 
@@ -330,6 +339,7 @@ def main():
             "n_residual_layers": args.n_residual_layers,
             "n_simulations": args.n_simulations,
             "c_puct": args.c_puct,
+            "device": args.device,
             "learning_rate": config.learning_rate,
             "batch_size": config.batch_size,
             "epochs": config.epochs,
