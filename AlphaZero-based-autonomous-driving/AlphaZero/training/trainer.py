@@ -76,9 +76,10 @@ class AlphaZeroTrainer:
     def _estimate_root_value(self, root_node):
         return root_node._W / root_node._n if root_node._n > 0 else 0
 
-    def self_play(self, seed=21):
+    def self_play(self, seed=21, max_steps=None, step_callback=None):
         self.env.reset(seed=seed)
         done = self._is_done()
+        step_count = 0
 
         root_node = MCTSNode(
             self.env,
@@ -95,7 +96,7 @@ class AlphaZeroTrainer:
             n_simulations=self.n_simulations,
         )
 
-        while not done:
+        while not done and (max_steps is None or step_count < max_steps):
             root_node.ensure_stack_of_planes()
             state = root_node.stack_of_planes
             self._run_rollouts(mcts)
@@ -109,8 +110,17 @@ class AlphaZeroTrainer:
             action = max(action_probs, key=action_probs.get)
             self.action_list.append(action)
             self.env.step(action)
+            step_count += 1
             if self.verbose:
                 print(f"action chosen: {action}")
+            if step_callback is not None:
+                step_callback(
+                    {
+                        "step": step_count,
+                        "action": action,
+                        "done": self._is_done(),
+                    }
+                )
 
             if action in root_node.children:
                 mcts.move_to_new_root(action)

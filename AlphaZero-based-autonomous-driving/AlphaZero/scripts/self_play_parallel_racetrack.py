@@ -1,5 +1,7 @@
 import argparse
 import multiprocessing as mp
+import os
+import time
 import traceback
 from pathlib import Path
 from queue import Empty
@@ -116,8 +118,20 @@ def _run_worker(task: dict) -> dict:
     worker_id = int(task["worker_id"])
     episodes_per_worker = int(task["episodes_per_worker"])
     n_actions = int(task["n_actions"])
+    print_actions = bool(task["print_actions"])
+    progress_interval = int(task["progress_interval"])
+    max_steps_per_episode = task["max_steps_per_episode"]
+    max_steps_per_episode = (
+        None if max_steps_per_episode is None else int(max_steps_per_episode)
+    )
     output_dir = Path(task["output_dir"])
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    print(
+        f"[worker {worker_id}] pid={os.getpid()} "
+        f"episodes={episodes_per_worker} n_simulations={task['n_simulations']}",
+        flush=True,
+    )
 
     episode_summaries = []
     total_samples = 0
@@ -125,9 +139,32 @@ def _run_worker(task: dict) -> dict:
     for episode_idx in range(episodes_per_worker):
         trainer.training_data.clear()
         trainer.action_list.clear()
+        trainer.verbose = print_actions
 
         episode_seed = int(task["self_play_seed"]) + episode_idx
-        trainer.self_play(seed=episode_seed)
+        print(
+            f"[worker {worker_id}] episode {episode_idx + 1}/{episodes_per_worker} "
+            f"start seed={episode_seed}",
+            flush=True,
+        )
+        t0 = time.perf_counter()
+
+        def _step_callback(info: dict):
+            step = int(info["step"])
+            done = bool(info["done"])
+            if progress_interval > 0 and (step % progress_interval == 0 or done):
+                print(
+                    f"[worker {worker_id}] episode {episode_idx + 1}/{episodes_per_worker} "
+                    f"step={step} action={info['action']} done={done}",
+                    flush=True,
+                )
+
+        trainer.self_play(
+            seed=episode_seed,
+            max_steps=max_steps_per_episode,
+            step_callback=_step_callback,
+        )
+        elapsed = time.perf_counter() - t0
 
         states, policies, values = _serialize_training_data(trainer.training_data, n_actions=n_actions)
         sample_count = int(states.shape[0])
@@ -152,6 +189,12 @@ def _run_worker(task: dict) -> dict:
                 "sample_count": sample_count,
                 "path": str(episode_path),
             }
+        )
+        print(
+            f"[worker {worker_id}] episode {episode_idx + 1}/{episodes_per_worker} "
+            f"done samples={sample_count} steps={len(trainer.action_list)} "
+            f"time={elapsed:.2f}s saved={episode_path.name}",
+            flush=True,
         )
 
     env.close()
@@ -201,6 +244,23 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--c-puct", type=float, default=2.5)
     parser.add_argument("--n-residual-layers", type=int, default=10)
     parser.add_argument("--torch-threads-per-worker", type=int, default=1)
+    parser.add_argument(
+        "--max-steps-per-episode",
+        type=int,
+        default=40,
+        help="Hard cap for self-play steps per episode (safety against very long episodes).",
+    )
+    parser.add_argument(
+        "--progress-interval",
+        type=int,
+        default=5,
+        help="Print progress every N self-play steps inside each worker.",
+    )
+    parser.add_argument(
+        "--print-actions",
+        action="store_true",
+        help="Print per-step actions inside each worker (verbose, mostly for debugging).",
+    )
     parser.add_argument(
         "--output-dir",
         default="AlphaZero-based-autonomous-driving/outputs/racetrack_self_play_parallel",
@@ -274,6 +334,9 @@ def main():
             "batch_size": config.batch_size,
             "epochs": config.epochs,
             "torch_threads_per_worker": args.torch_threads_per_worker,
+            "print_actions": args.print_actions,
+            "max_steps_per_episode": args.max_steps_per_episode,
+            "progress_interval": args.progress_interval,
         }
         process = ctx.Process(target=_worker_entry, args=(task, result_queue))
         process.start()
