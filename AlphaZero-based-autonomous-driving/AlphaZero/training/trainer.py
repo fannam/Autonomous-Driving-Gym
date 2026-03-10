@@ -37,6 +37,7 @@ class AlphaZeroTrainer:
         n_actions=5,
         verbose=True,
         device="auto",
+        max_root_visits=None,
     ):
         self.device = _resolve_training_device(device)
         self.network = network.to(self.device)
@@ -49,6 +50,11 @@ class AlphaZeroTrainer:
         self.stack_config = stack_config or StackConfig()
         self.n_actions = n_actions
         self.verbose = verbose
+        self.max_root_visits = (
+            None if max_root_visits is None else int(max_root_visits)
+        )
+        if self.max_root_visits is not None and self.max_root_visits <= 0:
+            raise ValueError("max_root_visits must be a positive integer or None.")
         self.training_data = []
         self.action_list = []
 
@@ -56,8 +62,16 @@ class AlphaZeroTrainer:
         return self.env.unwrapped._is_truncated() or self.env.unwrapped._is_terminated()
 
     def _run_rollouts(self, mcts):
-        for _ in range(self.n_simulations):
+        rollout_budget = self.n_simulations
+        if self.max_root_visits is not None:
+            remaining_rollouts = self.max_root_visits - int(mcts.root._n)
+            if remaining_rollouts <= 0:
+                return 0
+            rollout_budget = min(rollout_budget, remaining_rollouts)
+
+        for _ in range(rollout_budget):
             mcts.rollout()
+        return rollout_budget
 
     def _compute_action_probs(self, root_node):
         action_probs = {action: 0.0 for action in range(self.n_actions)}

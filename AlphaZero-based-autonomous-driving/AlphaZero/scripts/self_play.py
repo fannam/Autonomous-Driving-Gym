@@ -27,6 +27,7 @@ def run_self_play(
     epochs=None,
     stack_config=None,
     device="auto",
+    max_root_visits=None,
 ):
     config = SELF_PLAY_CONFIG
     if input_shape is None:
@@ -65,6 +66,7 @@ def run_self_play(
         stack_config=stack_config,
         n_actions=n_actions,
         device=device,
+        max_root_visits=max_root_visits,
     )
     trainer.self_play(seed=self_play_seed)
     return trainer
@@ -86,6 +88,12 @@ def parse_args():
     parser.add_argument("--learning-rate", type=float, default=None)
     parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument("--epochs", type=int, default=None)
+    parser.add_argument(
+        "--mcts-max-root-visits",
+        type=int,
+        default=None,
+        help="Stop rollouts for current decision once root visit count reaches this cap.",
+    )
     return parser.parse_args()
 
 
@@ -101,6 +109,7 @@ def main():
         batch_size=args.batch_size,
         epochs=args.epochs,
         device=args.device,
+        max_root_visits=args.mcts_max_root_visits,
     )
 
 

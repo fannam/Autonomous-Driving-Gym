@@ -114,6 +114,7 @@ def _run_worker(task: dict) -> dict:
         n_actions=int(task["n_actions"]),
         verbose=False,
         device=task["device"],
+        max_root_visits=task["mcts_max_root_visits"],
     )
 
     worker_id = int(task["worker_id"])
@@ -245,6 +246,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--n-simulations", type=int, default=5)
     parser.add_argument("--c-puct", type=float, default=2.5)
     parser.add_argument(
+        "--mcts-max-root-visits",
+        type=int,
+        default=None,
+        help="Stop rollouts for current decision once root visit count reaches this cap.",
+    )
+    parser.add_argument(
         "--device",
         type=str,
         default="auto",
@@ -312,6 +319,7 @@ def main():
     print(f"env_id={args.env_id}")
     print(f"workers={args.workers}, episodes_per_worker={args.episodes_per_worker}")
     print(f"n_actions={config.n_actions}, n_simulations={args.n_simulations}")
+    print(f"mcts_max_root_visits={args.mcts_max_root_visits}")
     print(f"device={args.device}")
     print(f"model_path={model_path}")
     print(f"output_dir={output_dir}")
@@ -339,6 +347,7 @@ def main():
             "n_residual_layers": args.n_residual_layers,
             "n_simulations": args.n_simulations,
             "c_puct": args.c_puct,
+            "mcts_max_root_visits": args.mcts_max_root_visits,
             "device": args.device,
             "learning_rate": config.learning_rate,
             "batch_size": config.batch_size,

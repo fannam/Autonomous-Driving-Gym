@@ -157,7 +157,15 @@ class MCTSNode:
 
 
 class MCTS:
-    def __init__(self, root, network, use_cuda=False, device=None, c_puct=5, n_simulations=10):
+    def __init__(
+        self,
+        root,
+        network,
+        use_cuda=False,
+        device=None,
+        c_puct=5,
+        n_simulations=10,
+    ):
         self.c_puct = c_puct
         self.root = root
         self._device = _resolve_mcts_device(device=device, use_cuda=use_cuda)
