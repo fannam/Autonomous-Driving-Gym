@@ -22,9 +22,6 @@ def run_self_play(
     n_actions=None,
     c_puct=None,
     n_simulations=None,
-    learning_rate=None,
-    batch_size=None,
-    epochs=None,
     stack_config=None,
     device="auto",
     max_root_visits=None,
@@ -40,12 +37,6 @@ def run_self_play(
         c_puct = config.c_puct
     if n_simulations is None:
         n_simulations = config.n_simulations
-    if learning_rate is None:
-        learning_rate = config.learning_rate
-    if batch_size is None:
-        batch_size = config.batch_size
-    if epochs is None:
-        epochs = config.epochs
     if stack_config is None:
         stack_config = config.stack
 
@@ -60,9 +51,6 @@ def run_self_play(
         env=env,
         c_puct=c_puct,
         n_simulations=n_simulations,
-        learning_rate=learning_rate,
-        batch_size=batch_size,
-        epochs=epochs,
         stack_config=stack_config,
         n_actions=n_actions,
         device=device,
@@ -85,9 +73,6 @@ def parse_args():
     parser.add_argument("--n-residual-layers", type=int, default=None)
     parser.add_argument("--c-puct", type=float, default=None)
     parser.add_argument("--n-simulations", type=int, default=None)
-    parser.add_argument("--learning-rate", type=float, default=None)
-    parser.add_argument("--batch-size", type=int, default=None)
-    parser.add_argument("--epochs", type=int, default=None)
     parser.add_argument(
         "--mcts-max-root-visits",
         type=int,
@@ -105,9 +90,6 @@ def main():
         n_residual_layers=args.n_residual_layers,
         c_puct=args.c_puct,
         n_simulations=args.n_simulations,
-        learning_rate=args.learning_rate,
-        batch_size=args.batch_size,
-        epochs=args.epochs,
         device=args.device,
         max_root_visits=args.mcts_max_root_visits,
     )
