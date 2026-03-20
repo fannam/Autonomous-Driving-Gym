@@ -23,6 +23,19 @@ class RacetrackEnv(AbstractEnv):
     See https://github.com/eleurent/highway-env/issues/231
     """
 
+    TRACK_SEGMENTS: tuple[tuple[str, str], ...] = (
+        ("a", "b"),
+        ("b", "c"),
+        ("c", "d"),
+        ("d", "e"),
+        ("e", "f"),
+        ("f", "g"),
+        ("g", "h"),
+        ("h", "i"),
+        ("i", "a"),
+    )
+    PROGRESS_EPS = 1e-6
+
     @classmethod
     def default_config(cls) -> dict:
         config = super().default_config()
@@ -56,6 +69,10 @@ class RacetrackEnv(AbstractEnv):
                 "centering_position": [0.5, 0.5],
                 "speed_limit": 10.0,
                 "terminate_off_road": True,
+                "terminate_on_finish": True,
+                "finish_laps": 1,
+                "finish_line_segment": ("a", "b"),
+                "finish_line_longitudinal": 0.0,
             }
         )
         return config
@@ -80,6 +97,9 @@ class RacetrackEnv(AbstractEnv):
         }
 
     def _is_terminated(self) -> bool:
+        self._update_progress_state()
+        if self.config["terminate_on_finish"] and self._finished:
+            return True
         if self.config["terminate_off_road"]:
             return self.vehicle.crashed or not self.vehicle.on_road
         return self.vehicle.crashed
@@ -87,9 +107,129 @@ class RacetrackEnv(AbstractEnv):
     def _is_truncated(self) -> bool:
         return self.time >= self.config["duration"]
 
+    def _is_success(self) -> bool:
+        self._update_progress_state()
+        return bool(self._finished)
+
+    def _info(self, obs, action) -> dict:
+        info = super()._info(obs, action)
+        self._update_progress_state()
+        info.update(
+            {
+                "finished": bool(self._finished),
+                "laps_completed": int(self._completed_laps),
+                "lap_length": float(self._lap_length),
+                "lap_progress": float(self._wrapped_progress),
+                "unwrapped_progress": float(self._unwrapped_progress),
+                "distance_to_finish": float(
+                    max(0.0, self._finish_target_progress - self._unwrapped_progress)
+                ),
+            }
+        )
+        return info
+
     def _reset(self) -> None:
         self._make_road()
         self._make_vehicles()
+        self._initialize_progress_tracking()
+
+    def _initialize_progress_tracking(self) -> None:
+        self._segment_reference_lengths = {}
+        self._segment_offsets = {}
+        lap_length = 0.0
+        for segment_key in self.TRACK_SEGMENTS:
+            lanes = self.road.network.graph[segment_key[0]][segment_key[1]]
+            reference_length = float(np.mean([lane.length for lane in lanes]))
+            self._segment_reference_lengths[segment_key] = reference_length
+            self._segment_offsets[segment_key] = lap_length
+            lap_length += reference_length
+
+        self._lap_length = lap_length
+        finish_segment = tuple(self.config["finish_line_segment"])
+        if finish_segment not in self._segment_offsets:
+            raise ValueError(
+                f"finish_line_segment={finish_segment!r} is not on the racetrack loop."
+            )
+
+        finish_longitudinal = float(self.config["finish_line_longitudinal"])
+        finish_longitudinal = float(
+            np.clip(
+                finish_longitudinal,
+                0.0,
+                self._segment_reference_lengths[finish_segment],
+            )
+        )
+        self._finish_progress = (
+            self._segment_offsets[finish_segment] + finish_longitudinal
+        )
+
+        start_progress = self._compute_track_progress()
+        self._start_progress = start_progress
+        self._wrapped_progress = start_progress
+        self._unwrapped_progress = start_progress
+        self._completed_laps = 0
+        self._finished = False
+        self._progress_updated_at_step = self.steps
+
+        finish_laps = max(1, int(self.config["finish_laps"]))
+        distance_to_finish = (self._finish_progress - start_progress) % self._lap_length
+        if distance_to_finish <= self.PROGRESS_EPS:
+            distance_to_finish = self._lap_length
+        self._finish_target_progress = (
+            start_progress + distance_to_finish + (finish_laps - 1) * self._lap_length
+        )
+
+    def _resolve_vehicle_lane_index(self) -> tuple[str, str, int]:
+        lane_index = getattr(self.vehicle, "lane_index", None)
+        if lane_index is not None and lane_index[:2] in self._segment_offsets:
+            return lane_index
+
+        heading = getattr(self.vehicle, "heading", None)
+        return self.road.network.get_closest_lane_index(self.vehicle.position, heading)
+
+    def _compute_track_progress(self) -> float:
+        lane_index = self._resolve_vehicle_lane_index()
+        segment_key = lane_index[:2]
+        lane = self.road.network.get_lane(lane_index)
+        longitudinal, _ = lane.local_coordinates(self.vehicle.position)
+        lane_length = max(float(lane.length), self.PROGRESS_EPS)
+        normalized_progress = float(np.clip(longitudinal / lane_length, 0.0, 1.0))
+        return self._segment_offsets[segment_key] + (
+            normalized_progress * self._segment_reference_lengths[segment_key]
+        )
+
+    def _update_progress_state(self) -> None:
+        if self.road is None or self.vehicle is None:
+            return
+        if getattr(self, "_progress_updated_at_step", None) == self.steps:
+            return
+
+        current_progress = self._compute_track_progress()
+        progress_candidates = (
+            current_progress - self._lap_length,
+            current_progress,
+            current_progress + self._lap_length,
+        )
+        self._unwrapped_progress = min(
+            progress_candidates,
+            key=lambda progress: abs(progress - self._unwrapped_progress),
+        )
+        self._wrapped_progress = current_progress
+        self._completed_laps = max(
+            0,
+            int(
+                np.floor(
+                    (self._unwrapped_progress - self._start_progress) / self._lap_length
+                )
+            ),
+        )
+        self._finished = (
+            self.vehicle.on_road
+            and not self.vehicle.crashed
+            and self._unwrapped_progress + self.PROGRESS_EPS
+            >= self._finish_target_progress
+        )
+        self._progress_updated_at_step = self.steps
 
     def _make_road(self) -> None:
         net = RoadNetwork()

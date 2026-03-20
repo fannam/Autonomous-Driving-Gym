@@ -49,7 +49,12 @@ class AlphaZeroConfig:
     n_residual_layers: int = 10
     c_puct: float = 2.5
     n_simulations: int = 5
+    temperature: float = 1.0
+    temperature_drop_step: int | None = None
+    root_dirichlet_alpha: float = 0.3
+    root_exploration_fraction: float = 0.25
     learning_rate: float = 0.001
+    weight_decay: float = 1e-4
     batch_size: int = 32
     epochs: int = 10
     model_path: str = "alphazero_model (19).pth"
@@ -63,7 +68,12 @@ SELF_PLAY_CONFIG = AlphaZeroConfig(
     stack=StackConfig(include_absolute_speed=False),
     c_puct=2.5,
     n_simulations=5,
+    temperature=1.0,
+    temperature_drop_step=None,
+    root_dirichlet_alpha=0.3,
+    root_exploration_fraction=0.25,
     learning_rate=0.001,
+    weight_decay=1e-4,
     batch_size=32,
     epochs=10,
 )
@@ -72,7 +82,9 @@ INFERENCE_CONFIG = AlphaZeroConfig(
     stack=StackConfig(include_absolute_speed=True),
     c_puct=3.5,
     n_simulations=15,
+    temperature=0.0,
     learning_rate=0.001,
+    weight_decay=1e-4,
     batch_size=64,
     epochs=30,
     model_path="alphazero_model (19).pth",
@@ -82,7 +94,9 @@ EVALUATION_CONFIG = AlphaZeroConfig(
     stack=StackConfig(include_absolute_speed=True),
     c_puct=3.5,
     n_simulations=15,
+    temperature=0.0,
     learning_rate=0.001,
+    weight_decay=1e-4,
     batch_size=64,
     epochs=30,
     model_path="alphazero_model (19).pth",

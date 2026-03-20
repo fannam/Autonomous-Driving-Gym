@@ -31,7 +31,12 @@ except ModuleNotFoundError as exc:
         from ..training.trainer import AlphaZeroTrainer
 
 
-def build_racetrack_env_config(duration: int, other_vehicles: int) -> dict:
+def build_racetrack_env_config(
+    duration: int,
+    other_vehicles: int,
+    finish_laps: int,
+    terminate_on_finish: bool,
+) -> dict:
     return {
         "observation": {
             "type": "DetailedOccupancyGrid",
@@ -66,6 +71,10 @@ def build_racetrack_env_config(duration: int, other_vehicles: int) -> dict:
         "controlled_vehicles": 1,
         "other_vehicles": other_vehicles,
         "terminate_off_road": True,
+        "terminate_on_finish": terminate_on_finish,
+        "finish_laps": finish_laps,
+        "finish_line_segment": ("a", "b"),
+        "finish_line_longitudinal": 0.0,
     }
 
 
@@ -107,11 +116,18 @@ def _run_worker(task: dict) -> dict:
         env=env,
         c_puct=float(task["c_puct"]),
         n_simulations=int(task["n_simulations"]),
+        learning_rate=float(task["learning_rate"]),
+        weight_decay=float(task["weight_decay"]),
         stack_config=task["stack_config"],
         n_actions=int(task["n_actions"]),
         verbose=False,
         device=task["device"],
         max_root_visits=task["mcts_max_root_visits"],
+        temperature=float(task["temperature"]),
+        temperature_drop_step=task["temperature_drop_step"],
+        add_root_dirichlet_noise=bool(task["add_root_dirichlet_noise"]),
+        root_dirichlet_alpha=float(task["root_dirichlet_alpha"]),
+        root_exploration_fraction=float(task["root_exploration_fraction"]),
     )
 
     worker_id = int(task["worker_id"])
@@ -231,6 +247,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--env-id", default="racetrack-v0")
     parser.add_argument("--duration", type=int, default=80)
     parser.add_argument("--other-vehicles", type=int, default=1)
+    parser.add_argument("--finish-laps", type=int, default=1)
+    parser.add_argument(
+        "--terminate-on-finish",
+        dest="terminate_on_finish",
+        action="store_true",
+        default=True,
+        help="End the episode as soon as the ego vehicle completes the configured number of laps.",
+    )
+    parser.add_argument(
+        "--no-terminate-on-finish",
+        dest="terminate_on_finish",
+        action="store_false",
+        help="Keep running after crossing the finish line; success will still be reported in env info.",
+    )
     parser.add_argument("--env-seed", type=int, default=100)
     parser.add_argument("--self-play-seed", type=int, default=1000)
     parser.add_argument(
@@ -242,6 +272,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model-path", default=None, help="Optional model checkpoint (.pth).")
     parser.add_argument("--n-simulations", type=int, default=5)
     parser.add_argument("--c-puct", type=float, default=2.5)
+    parser.add_argument("--temperature", type=float, default=None)
+    parser.add_argument("--temperature-drop-step", type=int, default=None)
+    parser.add_argument("--dirichlet-alpha", type=float, default=None)
+    parser.add_argument("--root-exploration-fraction", type=float, default=None)
     parser.add_argument(
         "--mcts-max-root-visits",
         type=int,
@@ -259,8 +293,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--max-steps-per-episode",
         type=int,
-        default=40,
-        help="Hard cap for self-play steps per episode (safety against very long episodes).",
+        default=None,
+        help="Optional hard cap for self-play steps per episode. Defaults to no extra cap beyond the environment's own duration.",
     )
     parser.add_argument(
         "--progress-interval",
@@ -289,6 +323,22 @@ def parse_args() -> argparse.Namespace:
 def main():
     args = parse_args()
     config = SELF_PLAY_CONFIG
+    temperature = config.temperature if args.temperature is None else args.temperature
+    temperature_drop_step = (
+        config.temperature_drop_step
+        if args.temperature_drop_step is None
+        else args.temperature_drop_step
+    )
+    root_dirichlet_alpha = (
+        config.root_dirichlet_alpha
+        if args.dirichlet_alpha is None
+        else args.dirichlet_alpha
+    )
+    root_exploration_fraction = (
+        config.root_exploration_fraction
+        if args.root_exploration_fraction is None
+        else args.root_exploration_fraction
+    )
     output_dir = Path(args.output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -311,11 +361,16 @@ def main():
     env_config = build_racetrack_env_config(
         duration=args.duration,
         other_vehicles=args.other_vehicles,
+        finish_laps=args.finish_laps,
+        terminate_on_finish=args.terminate_on_finish,
     )
 
     print(f"env_id={args.env_id}")
     print(f"workers={args.workers}, episodes_per_worker={args.episodes_per_worker}")
     print(f"n_actions={config.n_actions}, n_simulations={args.n_simulations}")
+    print(f"finish_laps={args.finish_laps}, terminate_on_finish={args.terminate_on_finish}")
+    print(f"temperature={temperature}, temperature_drop_step={temperature_drop_step}")
+    print(f"dirichlet_alpha={root_dirichlet_alpha}, root_exploration_fraction={root_exploration_fraction}")
     print(f"mcts_max_root_visits={args.mcts_max_root_visits}")
     print(f"device={args.device}")
     print(f"model_path={model_path}")
@@ -344,8 +399,15 @@ def main():
             "n_residual_layers": args.n_residual_layers,
             "n_simulations": args.n_simulations,
             "c_puct": args.c_puct,
+            "learning_rate": config.learning_rate,
+            "weight_decay": config.weight_decay,
             "mcts_max_root_visits": args.mcts_max_root_visits,
             "device": args.device,
+            "temperature": temperature,
+            "temperature_drop_step": temperature_drop_step,
+            "add_root_dirichlet_noise": True,
+            "root_dirichlet_alpha": root_dirichlet_alpha,
+            "root_exploration_fraction": root_exploration_fraction,
             "torch_threads_per_worker": args.torch_threads_per_worker,
             "print_actions": args.print_actions,
             "max_steps_per_episode": args.max_steps_per_episode,

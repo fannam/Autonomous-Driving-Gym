@@ -15,8 +15,9 @@ except ModuleNotFoundError as exc:
     from .settings import StackConfig
     from .state_stack import init_state_stack, update_state_stack
 
-TERMINAL_TRUNCATED_VALUE = 1.0
-TERMINAL_CRASHED_VALUE = -1.0
+TERMINAL_SUCCESS_VALUE = 1.0
+TERMINAL_TIMEOUT_VALUE = 0.0
+TERMINAL_FAILURE_VALUE = -1.0
 
 
 def _resolve_mcts_device(device=None, use_cuda=False) -> torch.device:
@@ -76,19 +77,14 @@ class MCTSNode:
         self._P = prior_prob
 
         ego_vehicle = self.env.unwrapped.road.vehicles[0]
-        if hasattr(ego_vehicle, "target_speeds"):
-            min_speed = float(ego_vehicle.target_speeds[0])
-            max_speed = float(ego_vehicle.target_speeds[-1])
-        else:
-            min_speed = float(getattr(ego_vehicle, "MIN_SPEED", -40.0))
-            max_speed = float(getattr(ego_vehicle, "MAX_SPEED", 40.0))
-        speed_span = max(max_speed - min_speed, 1e-6)
-        self.speed_bonus = (float(ego_vehicle.speed) - min_speed) / speed_span
-        self.collision = int(ego_vehicle.crashed)
+        self.collision = bool(getattr(ego_vehicle, "crashed", False))
+        success_fn = getattr(self.env.unwrapped, "_is_success", None)
+        self.success = bool(success_fn()) if callable(success_fn) else False
+        self.terminated = bool(self.env.unwrapped._is_terminated())
         self.truncated = bool(self.env.unwrapped._is_truncated())
         self.available_actions = (
             _collect_available_actions(self.env)
-            if not self.truncated and not self.collision
+            if not self.success and not self.truncated and not self.terminated
             else tuple()
         )
         self.stack_of_planes = None
@@ -117,9 +113,9 @@ class MCTSNode:
 
     def pucb_score(self, c_puct=2):
         q_value = 0 if self._n == 0 else self._W / self._n
-        exploration = c_puct * self._P * np.sqrt(np.log(self.parent._n) / (1 + self._n))
-        speed_and_collision_bonus = 0.5 * self.speed_bonus - 0.5 * self.collision
-        return q_value + exploration + speed_and_collision_bonus
+        parent_visit_count = max(1, self.parent._n)
+        exploration = c_puct * self._P * np.sqrt(parent_visit_count) / (1 + self._n)
+        return q_value + exploration
 
     def select(self, c_puct=3):
         if not self.children:
@@ -165,12 +161,17 @@ class MCTS:
         device=None,
         c_puct=5,
         n_simulations=10,
+        root_dirichlet_alpha=0.3,
+        root_exploration_fraction=0.25,
     ):
         self.c_puct = c_puct
         self.root = root
         self._device = _resolve_mcts_device(device=device, use_cuda=use_cuda)
         self._network = network.to(self._device)
         self._n_simulations = n_simulations
+        self._root_dirichlet_alpha = float(root_dirichlet_alpha)
+        self._root_exploration_fraction = float(root_exploration_fraction)
+        self._pending_root_noise = False
         if self._network.training:
             self._network.eval()
 
@@ -193,33 +194,86 @@ class MCTS:
         policy_dict = {action: prob for action, prob in enumerate(predicted_policy.squeeze().tolist())}
         return policy_dict, predicted_value.item()
 
-    def _compute_rollout_value(self, truncated, crashed, predicted_value):
+    def _compute_rollout_value(self, truncated, terminated, crashed, success, predicted_value):
+        if success:
+            return TERMINAL_SUCCESS_VALUE
         if truncated:
-            return TERMINAL_TRUNCATED_VALUE
-        if crashed:
-            return TERMINAL_CRASHED_VALUE
+            return TERMINAL_TIMEOUT_VALUE
+        if terminated or crashed:
+            return TERMINAL_FAILURE_VALUE
         return predicted_value
+
+    def _apply_dirichlet_noise_to_policy(self, policy, available_actions):
+        if not available_actions:
+            return policy
+
+        noise = np.random.dirichlet(
+            [self._root_dirichlet_alpha] * len(available_actions)
+        )
+        mixed_policy = dict(policy)
+        epsilon = self._root_exploration_fraction
+        for action, noise_prob in zip(available_actions, noise):
+            prior = float(policy.get(action, 0.0))
+            mixed_policy[action] = (1.0 - epsilon) * prior + epsilon * float(noise_prob)
+        return softmax_policy(mixed_policy, available_actions)
+
+    def prepare_root(self, add_exploration_noise=False):
+        self._pending_root_noise = bool(add_exploration_noise)
+        if not self._pending_root_noise or not self.root.children:
+            return
+
+        current_policy = {
+            action: child._P for action, child in self.root.children.items()
+        }
+        noised_policy = self._apply_dirichlet_noise_to_policy(
+            current_policy,
+            tuple(self.root.children.keys()),
+        )
+        for action, child in self.root.children.items():
+            child._P = noised_policy[action]
+        self._pending_root_noise = False
 
     def rollout(self):
         leaf_node = self.traverse_to_leaf()
         truncated = leaf_node.truncated
+        terminated = leaf_node.terminated
         crashed = bool(leaf_node.collision)
+        success = bool(leaf_node.success)
 
-        if truncated or crashed:
-            rollout_value = self._compute_rollout_value(truncated, crashed, predicted_value=0.0)
+        if success or truncated or terminated:
+            rollout_value = self._compute_rollout_value(
+                truncated,
+                terminated,
+                crashed,
+                success,
+                predicted_value=0.0,
+            )
             leaf_node.backpropagate_recursive(rollout_value)
             return
 
         predicted_policy, predicted_value = self._predict_policy_value(leaf_node)
         updated_policy = softmax_policy(predicted_policy, leaf_node.available_actions)
+        if leaf_node is self.root and self._pending_root_noise:
+            updated_policy = self._apply_dirichlet_noise_to_policy(
+                updated_policy,
+                leaf_node.available_actions,
+            )
+            self._pending_root_noise = False
         leaf_node.expand(updated_policy)
 
-        rollout_value = self._compute_rollout_value(truncated, crashed, predicted_value)
+        rollout_value = self._compute_rollout_value(
+            truncated,
+            terminated,
+            crashed,
+            success,
+            predicted_value,
+        )
         leaf_node.backpropagate_recursive(rollout_value)
 
     def move_to_new_root(self, action):
         if action in self.root.children:
             self.root = self.root.children[action]
             self.root.parent = None
+            self._pending_root_noise = False
             return
         raise ValueError("Hanh dong khong co trong cay hien tai.")
