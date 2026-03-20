@@ -1,6 +1,7 @@
 import argparse
 import multiprocessing as mp
 import os
+import sys
 import time
 import traceback
 from pathlib import Path
@@ -19,16 +20,12 @@ try:
 except ModuleNotFoundError as exc:
     if exc.name not in {"core", "network", "training", "AlphaZero"}:
         raise
-    try:
-        from AlphaZero.core.settings import SELF_PLAY_CONFIG
-        from AlphaZero.network.alphazero_network import AlphaZeroNetwork
-        from AlphaZero.training.trainer import AlphaZeroTrainer
-    except ModuleNotFoundError as nested_exc:
-        if nested_exc.name != "AlphaZero":
-            raise
-        from ..core.settings import SELF_PLAY_CONFIG
-        from ..network.alphazero_network import AlphaZeroNetwork
-        from ..training.trainer import AlphaZeroTrainer
+    package_root = Path(__file__).resolve().parents[1]
+    if str(package_root) not in sys.path:
+        sys.path.insert(0, str(package_root))
+    from core.settings import SELF_PLAY_CONFIG
+    from network.alphazero_network import AlphaZeroNetwork
+    from training.trainer import AlphaZeroTrainer
 
 
 def build_racetrack_env_config(

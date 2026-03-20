@@ -1,4 +1,6 @@
 import argparse
+import sys
+from pathlib import Path
 
 try:
     from core.settings import SELF_PLAY_CONFIG
@@ -6,12 +8,15 @@ try:
     from network.alphazero_network import AlphaZeroNetwork
     from training.trainer import AlphaZeroTrainer
 except ModuleNotFoundError as exc:
-    if exc.name not in {"core", "environment", "network", "training"}:
+    if exc.name not in {"core", "environment", "network", "training", "AlphaZero"}:
         raise
-    from ..core.settings import SELF_PLAY_CONFIG
-    from ..environment.config import init_env
-    from ..network.alphazero_network import AlphaZeroNetwork
-    from ..training.trainer import AlphaZeroTrainer
+    package_root = Path(__file__).resolve().parents[1]
+    if str(package_root) not in sys.path:
+        sys.path.insert(0, str(package_root))
+    from core.settings import SELF_PLAY_CONFIG
+    from environment.config import init_env
+    from network.alphazero_network import AlphaZeroNetwork
+    from training.trainer import AlphaZeroTrainer
 
 
 def run_self_play(
