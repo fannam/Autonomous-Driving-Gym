@@ -2,6 +2,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import torch.optim as optim
+from pathlib import Path
 from torch.utils.data import DataLoader, TensorDataset
 
 try:
@@ -28,7 +29,7 @@ class AlphaZeroTrainer:
     def __init__(
         self,
         network,
-        env,
+        env=None,
         c_puct=2,
         n_simulations=10,
         learning_rate=0.001,
@@ -83,15 +84,24 @@ class AlphaZeroTrainer:
         log_policy = F.log_softmax(policy_logits, dim=1)
         return -(normalized_targets * log_policy).sum(dim=1).mean()
 
+    def _require_env(self):
+        if self.env is None:
+            raise RuntimeError(
+                "This AlphaZeroTrainer method requires an environment, but env=None was provided."
+            )
+        return self.env
+
     def _is_success(self):
-        success_fn = getattr(self.env.unwrapped, "_is_success", None)
+        env = self._require_env()
+        success_fn = getattr(env.unwrapped, "_is_success", None)
         return bool(success_fn()) if callable(success_fn) else False
 
     def _is_done(self):
+        env = self._require_env()
         return (
             self._is_success()
-            or self.env.unwrapped._is_truncated()
-            or self.env.unwrapped._is_terminated()
+            or env.unwrapped._is_truncated()
+            or env.unwrapped._is_terminated()
         )
 
     def _run_rollouts(self, mcts):
@@ -186,21 +196,23 @@ class AlphaZeroTrainer:
         return int(np.random.choice(actions, p=probabilities))
 
     def _compute_episode_outcome(self, episode_finished):
+        env = self._require_env()
         if self._is_success():
             return 1.0
         if not episode_finished:
             return 0.0
-        if self.env.unwrapped._is_truncated():
+        if env.unwrapped._is_truncated():
             return 0.0
 
-        ego_vehicle = self.env.unwrapped.road.vehicles[0]
-        if bool(getattr(ego_vehicle, "crashed", False)) or self.env.unwrapped._is_terminated():
+        ego_vehicle = env.unwrapped.road.vehicles[0]
+        if bool(getattr(ego_vehicle, "crashed", False)) or env.unwrapped._is_terminated():
             return -1.0
         return 0.0
 
     def search_policy(self, temperature=0.0, add_root_dirichlet_noise=False):
+        env = self._require_env()
         root_node = MCTSNode(
-            self.env,
+            env,
             parent=None,
             parent_action=None,
             prior_prob=1.0,
@@ -226,14 +238,15 @@ class AlphaZeroTrainer:
         return action, action_probs
 
     def self_play(self, seed=21, max_steps=None, step_callback=None):
+        env = self._require_env()
         np.random.seed(seed)
-        self.env.reset(seed=seed)
+        env.reset(seed=seed)
         done = self._is_done()
         step_count = 0
         episode_history = []
 
         root_node = MCTSNode(
-            self.env,
+            env,
             parent=None,
             parent_action=None,
             prior_prob=1.0,
@@ -256,7 +269,7 @@ class AlphaZeroTrainer:
 
             action = self._sample_action(action_probs)
             self.action_list.append(action)
-            self.env.step(action)
+            env.step(action)
             step_count += 1
             if self.verbose:
                 print(f"action chosen: {action}")
@@ -274,7 +287,7 @@ class AlphaZeroTrainer:
                 root_node = mcts.root
             else:
                 root_node = MCTSNode(
-                    self.env,
+                    env,
                     parent=None,
                     parent_action=None,
                     prior_prob=1.0,
@@ -294,6 +307,9 @@ class AlphaZeroTrainer:
             print(f"end self-play outcome={final_outcome}")
 
     def _build_training_tensors(self):
+        if not self.training_data:
+            raise ValueError("No in-memory self-play samples are available for training.")
+
         states, policies, values = zip(*self.training_data)
         state_tensor = torch.cat(states)
         policy_tensor = torch.tensor(
@@ -303,13 +319,47 @@ class AlphaZeroTrainer:
         value_tensor = torch.tensor(values, dtype=torch.float32).unsqueeze(1)
         return state_tensor, policy_tensor, value_tensor
 
-    def train(self):
+    @staticmethod
+    def _coerce_training_tensors(states, policies, values):
+        state_tensor = torch.as_tensor(states, dtype=torch.float32)
+        policy_tensor = torch.as_tensor(policies, dtype=torch.float32)
+        value_tensor = torch.as_tensor(values, dtype=torch.float32)
+
+        if state_tensor.ndim != 4:
+            raise ValueError(
+                f"Expected states with shape (batch, channels, width, height), got {tuple(state_tensor.shape)}."
+            )
+        if policy_tensor.ndim != 2:
+            raise ValueError(
+                f"Expected policies with shape (batch, n_actions), got {tuple(policy_tensor.shape)}."
+            )
+        if value_tensor.ndim == 1:
+            value_tensor = value_tensor.unsqueeze(1)
+        elif value_tensor.ndim != 2 or value_tensor.shape[1] != 1:
+            raise ValueError(
+                f"Expected values with shape (batch, 1), got {tuple(value_tensor.shape)}."
+            )
+
+        batch_size = state_tensor.shape[0]
+        if batch_size == 0:
+            raise ValueError("Training tensors are empty.")
+        if policy_tensor.shape[0] != batch_size or value_tensor.shape[0] != batch_size:
+            raise ValueError(
+                "States, policies, and values must contain the same number of samples."
+            )
+        return state_tensor, policy_tensor, value_tensor
+
+    def _train_from_dataset(self, dataset, shuffle=True):
         self.network.train()
-        states, policies, values = self._build_training_tensors()
-        dataset = TensorDataset(states, policies, values)
-        dataloader = DataLoader(dataset, batch_size=self.batch_size, shuffle=True)
+        dataloader = DataLoader(dataset, batch_size=self.batch_size, shuffle=shuffle)
+        epoch_metrics = []
 
         for epoch in range(self.epochs):
+            epoch_loss_sum = 0.0
+            epoch_policy_loss_sum = 0.0
+            epoch_value_loss_sum = 0.0
+            sample_count = 0
+
             for state_batch, policy_batch, value_batch in dataloader:
                 state_batch = state_batch.to(self.device, non_blocking=self.device.type != "cpu")
                 policy_batch = policy_batch.to(self.device, non_blocking=self.device.type != "cpu")
@@ -324,10 +374,47 @@ class AlphaZeroTrainer:
                 torch.nn.utils.clip_grad_norm_(self.network.parameters(), max_norm=5.0)
                 self.optimizer.step()
 
-            print(f"Epoch {epoch + 1}/{self.epochs}, Loss: {loss.item()}")
+                batch_items = int(state_batch.shape[0])
+                sample_count += batch_items
+                epoch_loss_sum += float(loss.detach().item()) * batch_items
+                epoch_policy_loss_sum += float(policy_loss.detach().item()) * batch_items
+                epoch_value_loss_sum += float(value_loss.detach().item()) * batch_items
+
+            epoch_metric = {
+                "epoch": epoch + 1,
+                "loss": epoch_loss_sum / sample_count,
+                "policy_loss": epoch_policy_loss_sum / sample_count,
+                "value_loss": epoch_value_loss_sum / sample_count,
+            }
+            epoch_metrics.append(epoch_metric)
+            if self.verbose:
+                print(
+                    "Epoch "
+                    f"{epoch_metric['epoch']}/{self.epochs}, "
+                    f"loss={epoch_metric['loss']:.6f}, "
+                    f"policy_loss={epoch_metric['policy_loss']:.6f}, "
+                    f"value_loss={epoch_metric['value_loss']:.6f}"
+                )
+
+        return epoch_metrics
+
+    def train_from_tensors(self, states, policies, values, shuffle=True):
+        state_tensor, policy_tensor, value_tensor = self._coerce_training_tensors(
+            states,
+            policies,
+            values,
+        )
+        dataset = TensorDataset(state_tensor, policy_tensor, value_tensor)
+        return self._train_from_dataset(dataset, shuffle=shuffle)
+
+    def train(self):
+        states, policies, values = self._build_training_tensors()
+        return self.train_from_tensors(states, policies, values, shuffle=True)
 
     def save_model(self, path="alphazero_model.pth"):
-        torch.save(self.network.state_dict(), path)
+        output_path = Path(path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        torch.save(self.network.state_dict(), output_path)
 
     def load_model(self, path="alphazero_model.pth"):
         self.network.load_state_dict(torch.load(path, map_location=self.device))

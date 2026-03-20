@@ -107,6 +107,14 @@ Evaluation with MCTS:
 uv run python AlphaZero-based-autonomous-driving/AlphaZero/scripts/evaluate.py
 ```
 
+Offline training from saved self-play episodes:
+
+```bash
+uv run python AlphaZero-based-autonomous-driving/AlphaZero/scripts/train_from_self_play.py \
+  --input-dir AlphaZero-based-autonomous-driving/outputs/racetrack_self_play_parallel \
+  --model-out AlphaZero-based-autonomous-driving/outputs/alphazero_from_self_play.pth
+```
+
 `infer.py` and `evaluate.py` read their checkpoint path from `INFERENCE_CONFIG.model_path` and `EVALUATION_CONFIG.model_path` in `AlphaZero-based-autonomous-driving/AlphaZero/core/settings.py`. If you want to use another checkpoint without editing the file, call the underlying Python functions directly and pass `model_path=...`.
 
 ## Important script behavior
@@ -160,15 +168,42 @@ Important parameters there include:
 - `learning_rate`
 - `weight_decay`
 
-## Training note
+## Training workflow
 
-The repository currently provides:
+The repository now supports a simple two-stage AlphaZero workflow:
 
-- self-play generation
-- model loading/saving
-- `AlphaZeroTrainer.train()` for supervised updates on collected samples
+- generate self-play episodes as `.pt` files with `self_play_parallel_racetrack.py`
+- train a checkpoint from those saved tensors with `train_from_self_play.py`
 
-There is not yet a dedicated standalone CLI training script in the current codebase. Training is driven through the Python API and the collected self-play tensors.
+Each episode file stores:
+
+- `states`
+- `policies`
+- `values`
+- metadata such as `worker_id`, `episode_index`, and sampled `actions`
+
+`train_from_self_play.py`:
+
+- loads and concatenates matching episode files from a directory
+- infers the network input shape from the saved state tensors
+- optionally initializes from `--model-in`
+- trains with the same soft policy target and value loss used by `AlphaZeroTrainer`
+- saves both the checkpoint and per-epoch metrics JSON
+
+Useful flags:
+
+- `--input-dir`
+- `--pattern`
+- `--recursive`
+- `--limit-files`
+- `--model-in`
+- `--model-out`
+- `--metrics-out`
+- `--batch-size`
+- `--epochs`
+- `--learning-rate`
+- `--weight-decay`
+- `--device`
 
 ## Repository status
 
