@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import shlex
 import shutil
@@ -141,6 +142,43 @@ def has_option(args: list[str], option_name: str) -> bool:
     return any(arg == option_name or arg.startswith(f"{option_name}=") for arg in args)
 
 
+def get_option_value(args: list[str], option_name: str) -> str | None:
+    for index, arg in enumerate(args):
+        if arg == option_name:
+            next_index = index + 1
+            if next_index < len(args):
+                return args[next_index]
+            return None
+        if arg.startswith(f"{option_name}="):
+            return arg.split("=", 1)[1]
+    return None
+
+
+def upsert_option(args: list[str], option_name: str, value: str) -> list[str]:
+    updated_args = []
+    skip_next = False
+    replaced = False
+
+    for arg in args:
+        if skip_next:
+            skip_next = False
+            continue
+        if arg == option_name:
+            updated_args.extend([option_name, value])
+            skip_next = True
+            replaced = True
+            continue
+        if arg.startswith(f"{option_name}="):
+            updated_args.extend([option_name, value])
+            replaced = True
+            continue
+        updated_args.append(arg)
+
+    if not replaced:
+        updated_args.extend([option_name, value])
+    return updated_args
+
+
 def venv_python_path(venv_dir: Path) -> Path:
     if os.name == "nt":
         return venv_dir / "Scripts" / "python.exe"
@@ -215,6 +253,107 @@ def build_runtime_env(matplotlib_backend: str) -> dict[str, str]:
     env["PYTHONUNBUFFERED"] = "1"
     env["MPLBACKEND"] = matplotlib_backend
     return env
+
+
+def _probe_torch_cuda(
+    runner_prefix: list[str],
+    *,
+    cwd: Path,
+    env: dict[str, str],
+) -> dict[str, object] | None:
+    probe_code = """
+import json
+import warnings
+
+warnings.filterwarnings("ignore")
+
+result = {
+    "cuda_available": False,
+    "arch_list": [],
+    "device_name": None,
+    "device_capability": None,
+    "torch_cuda_version": None,
+}
+
+try:
+    import torch
+
+    result["torch_cuda_version"] = getattr(torch.version, "cuda", None)
+    result["arch_list"] = list(getattr(torch.cuda, "get_arch_list", lambda: [])())
+    result["cuda_available"] = bool(torch.cuda.is_available())
+    if result["cuda_available"]:
+        props = torch.cuda.get_device_properties(0)
+        result["device_name"] = props.name
+        result["device_capability"] = [int(props.major), int(props.minor)]
+except Exception as exc:
+    result["error"] = f"{type(exc).__name__}: {exc}"
+
+print(json.dumps(result))
+""".strip()
+    completed = subprocess.run(
+        [*runner_prefix, "-c", probe_code],
+        cwd=str(cwd),
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    if completed.returncode != 0:
+        return None
+
+    lines = [line.strip() for line in (completed.stdout or "").splitlines() if line.strip()]
+    if not lines:
+        return None
+    try:
+        return json.loads(lines[-1])
+    except json.JSONDecodeError:
+        return None
+
+
+def _capability_tag(capability: object) -> str | None:
+    if not isinstance(capability, list | tuple) or len(capability) != 2:
+        return None
+    major, minor = capability
+    try:
+        return f"sm_{int(major)}{int(minor)}"
+    except (TypeError, ValueError):
+        return None
+
+
+def resolve_self_play_device(
+    runner_prefix: list[str],
+    repo_dir: Path,
+    passthrough_args: list[str],
+    runtime_env: dict[str, str],
+) -> tuple[list[str], dict[str, str]]:
+    requested_device = get_option_value(passthrough_args, "--device")
+    if requested_device is not None and requested_device.lower() not in {"", "auto"}:
+        return passthrough_args, runtime_env
+
+    probe_env = dict(runtime_env)
+    probe_env["PYTHONWARNINGS"] = "ignore"
+    probe = _probe_torch_cuda(runner_prefix, cwd=repo_dir, env=probe_env)
+    if not probe:
+        log("Torch CUDA probe unavailable. Leaving self-play device unchanged.")
+        return passthrough_args, runtime_env
+
+    if not probe.get("cuda_available", False):
+        return passthrough_args, runtime_env
+
+    capability_tag = _capability_tag(probe.get("device_capability"))
+    arch_list = [str(item) for item in probe.get("arch_list", [])]
+    if capability_tag and arch_list and capability_tag not in arch_list:
+        device_name = probe.get("device_name") or "unknown GPU"
+        runtime_env = dict(runtime_env)
+        runtime_env["CUDA_VISIBLE_DEVICES"] = ""
+        log(
+            "Installed PyTorch CUDA kernels do not support "
+            f"{device_name} ({capability_tag}); forcing --device cpu."
+        )
+        filtered_args = upsert_option(passthrough_args, "--device", "cpu")
+        return filtered_args, runtime_env
+
+    return passthrough_args, runtime_env
 
 
 def resolve_runner(
@@ -382,13 +521,21 @@ def main() -> int:
         log("Skipping self-play execution.")
         return 0
 
-    self_play_command = build_self_play_command(runner_prefix, passthrough_args)
     runtime_env = build_runtime_env(args.matplotlib_backend)
+    passthrough_args, runtime_env = resolve_self_play_device(
+        runner_prefix,
+        repo_dir,
+        passthrough_args,
+        runtime_env,
+    )
+    self_play_command = build_self_play_command(runner_prefix, passthrough_args)
     log(
         "Runtime overrides: "
         f"PYTHONUNBUFFERED={runtime_env['PYTHONUNBUFFERED']} "
         f"MPLBACKEND={runtime_env['MPLBACKEND']}"
     )
+    if runtime_env.get("CUDA_VISIBLE_DEVICES", None) == "":
+        log("CUDA visibility override: hidden GPU devices for this run.")
     if not passthrough_args:
         log("No self-play overrides were provided. Using the defaults from the repo script.")
     run_command(self_play_command, cwd=repo_dir, env=runtime_env)
