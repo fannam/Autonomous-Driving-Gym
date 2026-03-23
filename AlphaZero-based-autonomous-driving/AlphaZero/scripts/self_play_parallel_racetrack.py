@@ -2,6 +2,7 @@ import argparse
 import multiprocessing as mp
 import os
 import sys
+import threading
 import time
 import traceback
 from pathlib import Path
@@ -93,6 +94,70 @@ def _serialize_training_data(training_data, n_actions: int):
     return state_tensor, policy_tensor, value_tensor
 
 
+def _format_duration(seconds: float) -> str:
+    seconds = max(0.0, float(seconds))
+    if seconds < 60:
+        return f"{seconds:.1f}s"
+    minutes, remaining_seconds = divmod(seconds, 60.0)
+    if minutes < 60:
+        return f"{int(minutes)}m{int(remaining_seconds):02d}s"
+    hours, remaining_minutes = divmod(int(minutes), 60)
+    return f"{hours}h{remaining_minutes:02d}m"
+
+
+def _init_search_stats_accumulator() -> dict:
+    return {
+        "steps": 0,
+        "search_time_s": 0.0,
+        "rollouts": 0,
+        "rollout_time_s": 0.0,
+        "inference_calls": 0,
+        "inference_time_s": 0.0,
+    }
+
+
+def _accumulate_search_stats(accumulator: dict, search_stats: dict | None) -> None:
+    if not search_stats:
+        return
+    accumulator["steps"] += 1
+    accumulator["search_time_s"] += float(search_stats.get("search_time_s", 0.0))
+    accumulator["rollouts"] += int(search_stats.get("rollouts", 0))
+    accumulator["rollout_time_s"] += float(search_stats.get("rollout_time_s", 0.0))
+    accumulator["inference_calls"] += int(search_stats.get("inference_calls", 0))
+    accumulator["inference_time_s"] += float(search_stats.get("inference_time_s", 0.0))
+
+
+def _format_step_search_stats(search_stats: dict | None) -> str:
+    if not search_stats:
+        return "mcts=unavailable"
+    return (
+        f"mcts_rollouts={int(search_stats.get('rollouts', 0))} "
+        f"search={float(search_stats.get('search_time_s', 0.0)):.2f}s "
+        f"mcts_rps={float(search_stats.get('effective_rollouts_per_sec', 0.0)):.2f} "
+        f"nn_calls={int(search_stats.get('inference_calls', 0))} "
+        f"nn_avg={float(search_stats.get('avg_inference_ms', 0.0)):.1f}ms/state"
+    )
+
+
+def _format_episode_search_summary(accumulator: dict) -> str:
+    decisions = int(accumulator["steps"])
+    rollouts = int(accumulator["rollouts"])
+    inference_calls = int(accumulator["inference_calls"])
+    search_time_s = float(accumulator["search_time_s"])
+    rollout_time_s = float(accumulator["rollout_time_s"])
+    inference_time_s = float(accumulator["inference_time_s"])
+    avg_search_s = 0.0 if decisions == 0 else search_time_s / decisions
+    avg_rollouts = 0.0 if decisions == 0 else rollouts / decisions
+    avg_inference_ms = 0.0 if inference_calls == 0 else 1000.0 * inference_time_s / inference_calls
+    avg_rollout_ms = 0.0 if rollouts == 0 else 1000.0 * rollout_time_s / rollouts
+    effective_rollouts_per_sec = 0.0 if search_time_s <= 0.0 else rollouts / search_time_s
+    return (
+        f"decisions={decisions} avg_search={avg_search_s:.2f}s "
+        f"avg_rollouts={avg_rollouts:.1f} mcts_rps={effective_rollouts_per_sec:.2f} "
+        f"nn_avg={avg_inference_ms:.1f}ms/state avg_rollout={avg_rollout_ms:.1f}ms"
+    )
+
+
 def _run_worker(task: dict) -> dict:
     torch.set_num_threads(int(task["torch_threads_per_worker"]))
     torch.manual_seed(int(task["network_seed"]))
@@ -132,12 +197,48 @@ def _run_worker(task: dict) -> dict:
     n_actions = int(task["n_actions"])
     print_actions = bool(task["print_actions"])
     progress_interval = int(task["progress_interval"])
+    worker_heartbeat_interval = float(task["worker_heartbeat_interval"])
     max_steps_per_episode = task["max_steps_per_episode"]
     max_steps_per_episode = (
         None if max_steps_per_episode is None else int(max_steps_per_episode)
     )
     output_dir = Path(task["output_dir"])
     output_dir.mkdir(parents=True, exist_ok=True)
+    worker_state = {
+        "episode_index": 0,
+        "step": 0,
+        "episode_seed": None,
+        "episode_started_at": time.perf_counter(),
+        "status": "booting",
+    }
+    worker_state_lock = threading.Lock()
+    heartbeat_stop = threading.Event()
+
+    def _worker_heartbeat_loop() -> None:
+        while not heartbeat_stop.wait(worker_heartbeat_interval):
+            with worker_state_lock:
+                episode_index = int(worker_state["episode_index"])
+                step = int(worker_state["step"])
+                episode_seed = worker_state["episode_seed"]
+                episode_started_at = float(worker_state["episode_started_at"])
+                status = str(worker_state["status"])
+            elapsed = time.perf_counter() - episode_started_at
+            print(
+                f"[worker {worker_id}] heartbeat "
+                f"episode={episode_index + 1}/{episodes_per_worker} "
+                f"step={step} elapsed={_format_duration(elapsed)} "
+                f"seed={episode_seed} status={status} device={trainer.device}",
+                flush=True,
+            )
+
+    heartbeat_thread = None
+    if worker_heartbeat_interval > 0:
+        heartbeat_thread = threading.Thread(
+            target=_worker_heartbeat_loop,
+            name=f"worker-{worker_id}-heartbeat",
+            daemon=True,
+        )
+        heartbeat_thread.start()
 
     print(
         f"[worker {worker_id}] pid={os.getpid()} "
@@ -149,68 +250,89 @@ def _run_worker(task: dict) -> dict:
     episode_summaries = []
     total_samples = 0
 
-    for episode_idx in range(episodes_per_worker):
-        trainer.training_data.clear()
-        trainer.action_list.clear()
-        trainer.verbose = print_actions
+    try:
+        for episode_idx in range(episodes_per_worker):
+            trainer.training_data.clear()
+            trainer.action_list.clear()
+            trainer.verbose = print_actions
+            episode_search_stats = _init_search_stats_accumulator()
 
-        episode_seed = int(task["self_play_seed"]) + episode_idx
-        print(
-            f"[worker {worker_id}] episode {episode_idx + 1}/{episodes_per_worker} "
-            f"start seed={episode_seed}",
-            flush=True,
-        )
-        t0 = time.perf_counter()
+            episode_seed = int(task["self_play_seed"]) + episode_idx
+            with worker_state_lock:
+                worker_state["episode_index"] = episode_idx
+                worker_state["step"] = 0
+                worker_state["episode_seed"] = episode_seed
+                worker_state["episode_started_at"] = time.perf_counter()
+                worker_state["status"] = "starting"
+            print(
+                f"[worker {worker_id}] episode {episode_idx + 1}/{episodes_per_worker} "
+                f"start seed={episode_seed}",
+                flush=True,
+            )
+            t0 = time.perf_counter()
 
-        def _step_callback(info: dict):
-            step = int(info["step"])
-            done = bool(info["done"])
-            if progress_interval > 0 and (step % progress_interval == 0 or done):
-                print(
-                    f"[worker {worker_id}] episode {episode_idx + 1}/{episodes_per_worker} "
-                    f"step={step} action={info['action']} done={done}",
-                    flush=True,
-                )
+            def _step_callback(info: dict):
+                step = int(info["step"])
+                done = bool(info["done"])
+                search_stats = info.get("search_stats")
+                with worker_state_lock:
+                    worker_state["step"] = step
+                    worker_state["status"] = "done" if done else "running"
+                _accumulate_search_stats(episode_search_stats, search_stats)
+                if progress_interval > 0 and (step % progress_interval == 0 or done):
+                    print(
+                        f"[worker {worker_id}] episode {episode_idx + 1}/{episodes_per_worker} "
+                        f"step={step} action={info['action']} done={done} "
+                        f"{_format_step_search_stats(search_stats)}",
+                        flush=True,
+                    )
 
-        trainer.self_play(
-            seed=episode_seed,
-            max_steps=max_steps_per_episode,
-            step_callback=_step_callback,
-        )
-        elapsed = time.perf_counter() - t0
+            trainer.self_play(
+                seed=episode_seed,
+                max_steps=max_steps_per_episode,
+                step_callback=_step_callback,
+            )
+            elapsed = time.perf_counter() - t0
 
-        states, policies, values = _serialize_training_data(trainer.training_data, n_actions=n_actions)
-        sample_count = int(states.shape[0])
-        total_samples += sample_count
+            states, policies, values = _serialize_training_data(trainer.training_data, n_actions=n_actions)
+            sample_count = int(states.shape[0])
+            total_samples += sample_count
 
-        episode_path = output_dir / f"worker_{worker_id:02d}_episode_{episode_idx:03d}.pt"
-        torch.save(
-            {
-                "worker_id": worker_id,
-                "episode_index": episode_idx,
-                "self_play_seed": episode_seed,
-                "states": states,
-                "policies": policies,
-                "values": values,
-                "actions": list(trainer.action_list),
-            },
-            episode_path,
-        )
-        episode_summaries.append(
-            {
-                "episode_index": episode_idx,
-                "sample_count": sample_count,
-                "path": str(episode_path),
-            }
-        )
-        print(
-            f"[worker {worker_id}] episode {episode_idx + 1}/{episodes_per_worker} "
-            f"done samples={sample_count} steps={len(trainer.action_list)} "
-            f"time={elapsed:.2f}s saved={episode_path.name}",
-            flush=True,
-        )
+            episode_path = output_dir / f"worker_{worker_id:02d}_episode_{episode_idx:03d}.pt"
+            torch.save(
+                {
+                    "worker_id": worker_id,
+                    "episode_index": episode_idx,
+                    "self_play_seed": episode_seed,
+                    "states": states,
+                    "policies": policies,
+                    "values": values,
+                    "actions": list(trainer.action_list),
+                },
+                episode_path,
+            )
+            episode_summaries.append(
+                {
+                    "episode_index": episode_idx,
+                    "sample_count": sample_count,
+                    "path": str(episode_path),
+                }
+            )
+            with worker_state_lock:
+                worker_state["status"] = "saved"
+            print(
+                f"[worker {worker_id}] episode {episode_idx + 1}/{episodes_per_worker} "
+                f"done samples={sample_count} steps={len(trainer.action_list)} "
+                f"time={elapsed:.2f}s saved={episode_path.name} "
+                f"{_format_episode_search_summary(episode_search_stats)}",
+                flush=True,
+            )
+    finally:
+        heartbeat_stop.set()
+        if heartbeat_thread is not None:
+            heartbeat_thread.join(timeout=1.0)
+        env.close()
 
-    env.close()
     return {
         "worker_id": worker_id,
         "total_samples": total_samples,
@@ -427,8 +549,26 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--progress-interval",
         type=int,
-        default=5,
-        help="Print progress every N self-play steps inside each worker.",
+        default=1,
+        help="Print MCTS/inference stats every N self-play steps inside each worker.",
+    )
+    parser.add_argument(
+        "--worker-heartbeat-interval",
+        type=float,
+        default=0.0,
+        help=(
+            "Print a liveness heartbeat from each worker every N seconds even if no step has completed yet. "
+            "Set to 0 to disable."
+        ),
+    )
+    parser.add_argument(
+        "--manager-heartbeat-interval",
+        type=float,
+        default=0.0,
+        help=(
+            "Print a liveness heartbeat from the parent process every N seconds while waiting for results. "
+            "Set to 0 to disable."
+        ),
     )
     parser.add_argument(
         "--print-actions",
@@ -504,6 +644,9 @@ def main():
     print(f"mcts_max_root_visits={args.mcts_max_root_visits}")
     print(f"device={args.device}")
     print(f"resolved_worker_devices={unique_worker_devices}")
+    print(f"progress_interval={args.progress_interval}")
+    print(f"worker_heartbeat_interval={args.worker_heartbeat_interval}")
+    print(f"manager_heartbeat_interval={args.manager_heartbeat_interval}")
     print(
         "worker_device_assignments="
         + ", ".join(
@@ -549,18 +692,73 @@ def main():
             "print_actions": args.print_actions,
             "max_steps_per_episode": args.max_steps_per_episode,
             "progress_interval": args.progress_interval,
+            "worker_heartbeat_interval": args.worker_heartbeat_interval,
         }
         process = ctx.Process(target=_worker_entry, args=(task, result_queue))
         process.start()
         processes.append(process)
+        print(
+            f"[manager] started worker_{worker_id} pid={process.pid} device={worker_devices[worker_id]}",
+            flush=True,
+        )
 
     results = []
-    for _ in range(args.workers):
+    pending_worker_ids = set(range(args.workers))
+    wait_start = time.perf_counter()
+    last_result_at = wait_start
+    manager_heartbeat_interval = float(args.manager_heartbeat_interval)
+    while pending_worker_ids:
+        since_last_result = time.perf_counter() - last_result_at
+        remaining_before_timeout = float(args.result_timeout) - since_last_result
+        if remaining_before_timeout <= 0:
+            pending_summary = ", ".join(f"worker_{worker_id}" for worker_id in sorted(pending_worker_ids))
+            results.append(
+                {
+                    "ok": False,
+                    "worker_id": None,
+                    "error": (
+                        "Timed out waiting for worker result. "
+                        f"pending=[{pending_summary}] inactivity={_format_duration(since_last_result)}"
+                    ),
+                }
+            )
+            break
+
+        queue_timeout = remaining_before_timeout
+        if manager_heartbeat_interval > 0:
+            queue_timeout = min(queue_timeout, manager_heartbeat_interval)
         try:
-            item = result_queue.get(timeout=args.result_timeout)
+            item = result_queue.get(timeout=queue_timeout)
             results.append(item)
+            result_worker_id = (
+                item["result"]["worker_id"] if item.get("ok", False) else item.get("worker_id")
+            )
+            if result_worker_id is not None:
+                pending_worker_ids.discard(int(result_worker_id))
+            last_result_at = time.perf_counter()
+            completed_workers = int(args.workers) - len(pending_worker_ids)
+            print(
+                f"[manager] received result from worker={result_worker_id} "
+                f"ok={item.get('ok', False)} completed={completed_workers}/{args.workers}",
+                flush=True,
+            )
         except Empty:
-            results.append({"ok": False, "worker_id": None, "error": "Timed out waiting for worker result."})
+            elapsed = time.perf_counter() - wait_start
+            alive_workers = [
+                f"worker_{worker_id}(pid={processes[worker_id].pid},device={worker_devices[worker_id]})"
+                for worker_id in sorted(pending_worker_ids)
+                if processes[worker_id].is_alive()
+            ]
+            stalled_workers = sorted(
+                worker_id for worker_id in pending_worker_ids if not processes[worker_id].is_alive()
+            )
+            print(
+                f"[manager] heartbeat elapsed={_format_duration(elapsed)} "
+                f"completed={int(args.workers) - len(pending_worker_ids)}/{args.workers} "
+                f"pending={sorted(pending_worker_ids)} "
+                f"alive={alive_workers} dead_without_result={stalled_workers}",
+                flush=True,
+            )
 
     for process in processes:
         process.join(timeout=5)

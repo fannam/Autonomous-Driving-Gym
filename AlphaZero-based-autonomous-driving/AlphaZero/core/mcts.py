@@ -1,4 +1,5 @@
 import copy
+import time
 from typing import Dict
 
 import numpy as np
@@ -172,8 +173,40 @@ class MCTS:
         self._root_dirichlet_alpha = float(root_dirichlet_alpha)
         self._root_exploration_fraction = float(root_exploration_fraction)
         self._pending_root_noise = False
+        self.reset_timing_stats()
         if self._network.training:
             self._network.eval()
+
+    def reset_timing_stats(self):
+        self._timing_stats = {
+            "rollouts": 0,
+            "terminal_rollouts": 0,
+            "inference_calls": 0,
+            "rollout_time_s": 0.0,
+            "inference_time_s": 0.0,
+        }
+
+    def get_timing_stats(self):
+        rollouts = int(self._timing_stats["rollouts"])
+        terminal_rollouts = int(self._timing_stats["terminal_rollouts"])
+        inference_calls = int(self._timing_stats["inference_calls"])
+        rollout_time_s = float(self._timing_stats["rollout_time_s"])
+        inference_time_s = float(self._timing_stats["inference_time_s"])
+        avg_rollout_ms = 0.0 if rollouts == 0 else 1000.0 * rollout_time_s / rollouts
+        avg_inference_ms = (
+            0.0 if inference_calls == 0 else 1000.0 * inference_time_s / inference_calls
+        )
+        rollouts_per_sec = 0.0 if rollout_time_s <= 0.0 else rollouts / rollout_time_s
+        return {
+            "rollouts": rollouts,
+            "terminal_rollouts": terminal_rollouts,
+            "inference_calls": inference_calls,
+            "rollout_time_s": rollout_time_s,
+            "inference_time_s": inference_time_s,
+            "avg_rollout_ms": avg_rollout_ms,
+            "avg_inference_ms": avg_inference_ms,
+            "rollouts_per_sec": rollouts_per_sec,
+        }
 
     def traverse_to_leaf(self):
         node = self.root
@@ -188,8 +221,16 @@ class MCTS:
             non_blocking=self._device.type != "cpu",
         )
 
+        if self._device.type == "cuda":
+            torch.cuda.synchronize(self._device)
+        inference_started_at = time.perf_counter()
         with torch.inference_mode():
             predicted_policy, predicted_value = self._network(state_tensor)
+        if self._device.type == "cuda":
+            torch.cuda.synchronize(self._device)
+        inference_elapsed = time.perf_counter() - inference_started_at
+        self._timing_stats["inference_calls"] += 1
+        self._timing_stats["inference_time_s"] += inference_elapsed
 
         policy_dict = {action: prob for action, prob in enumerate(predicted_policy.squeeze().tolist())}
         return policy_dict, predicted_value.item()
@@ -234,41 +275,47 @@ class MCTS:
         self._pending_root_noise = False
 
     def rollout(self):
+        rollout_started_at = time.perf_counter()
         leaf_node = self.traverse_to_leaf()
-        truncated = leaf_node.truncated
-        terminated = leaf_node.terminated
-        crashed = bool(leaf_node.collision)
-        success = bool(leaf_node.success)
+        try:
+            truncated = leaf_node.truncated
+            terminated = leaf_node.terminated
+            crashed = bool(leaf_node.collision)
+            success = bool(leaf_node.success)
 
-        if success or truncated or terminated:
+            if success or truncated or terminated:
+                self._timing_stats["terminal_rollouts"] += 1
+                rollout_value = self._compute_rollout_value(
+                    truncated,
+                    terminated,
+                    crashed,
+                    success,
+                    predicted_value=0.0,
+                )
+                leaf_node.backpropagate_recursive(rollout_value)
+                return
+
+            predicted_policy, predicted_value = self._predict_policy_value(leaf_node)
+            updated_policy = softmax_policy(predicted_policy, leaf_node.available_actions)
+            if leaf_node is self.root and self._pending_root_noise:
+                updated_policy = self._apply_dirichlet_noise_to_policy(
+                    updated_policy,
+                    leaf_node.available_actions,
+                )
+                self._pending_root_noise = False
+            leaf_node.expand(updated_policy)
+
             rollout_value = self._compute_rollout_value(
                 truncated,
                 terminated,
                 crashed,
                 success,
-                predicted_value=0.0,
+                predicted_value,
             )
             leaf_node.backpropagate_recursive(rollout_value)
-            return
-
-        predicted_policy, predicted_value = self._predict_policy_value(leaf_node)
-        updated_policy = softmax_policy(predicted_policy, leaf_node.available_actions)
-        if leaf_node is self.root and self._pending_root_noise:
-            updated_policy = self._apply_dirichlet_noise_to_policy(
-                updated_policy,
-                leaf_node.available_actions,
-            )
-            self._pending_root_noise = False
-        leaf_node.expand(updated_policy)
-
-        rollout_value = self._compute_rollout_value(
-            truncated,
-            terminated,
-            crashed,
-            success,
-            predicted_value,
-        )
-        leaf_node.backpropagate_recursive(rollout_value)
+        finally:
+            self._timing_stats["rollouts"] += 1
+            self._timing_stats["rollout_time_s"] += time.perf_counter() - rollout_started_at
 
     def move_to_new_root(self, action):
         if action in self.root.children:

@@ -1,4 +1,5 @@
 import numpy as np
+import time
 import torch
 import torch.nn.functional as F
 import torch.optim as optim
@@ -258,7 +259,22 @@ class AlphaZeroTrainer:
             root_node.ensure_stack_of_planes()
             state = root_node.stack_of_planes.copy()
             mcts.prepare_root(add_exploration_noise=self.add_root_dirichlet_noise)
-            self._run_rollouts(mcts)
+            mcts.reset_timing_stats()
+            search_started_at = time.perf_counter()
+            executed_rollouts = self._run_rollouts(mcts)
+            search_elapsed = time.perf_counter() - search_started_at
+            search_stats = mcts.get_timing_stats()
+            search_stats["requested_rollouts"] = int(executed_rollouts)
+            search_stats["search_time_s"] = float(search_elapsed)
+            search_stats["search_overhead_s"] = max(
+                0.0,
+                float(search_elapsed) - float(search_stats["rollout_time_s"]),
+            )
+            search_stats["effective_rollouts_per_sec"] = (
+                0.0
+                if search_elapsed <= 0.0
+                else float(search_stats["rollouts"]) / float(search_elapsed)
+            )
 
             action_probs = self._compute_action_probs(
                 root_node,
@@ -279,6 +295,7 @@ class AlphaZeroTrainer:
                         "step": step_count,
                         "action": action,
                         "done": self._is_done(),
+                        "search_stats": search_stats,
                     }
                 )
 
