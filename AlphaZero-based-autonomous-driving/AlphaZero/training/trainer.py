@@ -256,8 +256,10 @@ class AlphaZeroTrainer:
         mcts = self._build_mcts(root_node)
 
         while not done and (max_steps is None or step_count < max_steps):
+            root_prepare_started_at = time.perf_counter()
             root_node.ensure_stack_of_planes()
             state = root_node.stack_of_planes.copy()
+            root_prepare_elapsed = time.perf_counter() - root_prepare_started_at
             mcts.prepare_root(add_exploration_noise=self.add_root_dirichlet_noise)
             mcts.reset_timing_stats()
             search_started_at = time.perf_counter()
@@ -266,6 +268,7 @@ class AlphaZeroTrainer:
             search_stats = mcts.get_timing_stats()
             search_stats["requested_rollouts"] = int(executed_rollouts)
             search_stats["search_time_s"] = float(search_elapsed)
+            search_stats["root_prepare_time_s"] = float(root_prepare_elapsed)
             search_stats["search_overhead_s"] = max(
                 0.0,
                 float(search_elapsed) - float(search_stats["rollout_time_s"]),

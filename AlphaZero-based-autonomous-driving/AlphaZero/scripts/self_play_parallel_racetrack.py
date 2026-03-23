@@ -109,10 +109,31 @@ def _init_search_stats_accumulator() -> dict:
     return {
         "steps": 0,
         "search_time_s": 0.0,
+        "root_prepare_time_s": 0.0,
+        "search_overhead_s": 0.0,
         "rollouts": 0,
         "rollout_time_s": 0.0,
         "inference_calls": 0,
         "inference_time_s": 0.0,
+        "traverse_time_s": 0.0,
+        "ensure_stack_time_s": 0.0,
+        "stack_init_time_s": 0.0,
+        "stack_parent_copy_time_s": 0.0,
+        "observation_time_s": 0.0,
+        "stack_update_time_s": 0.0,
+        "tensor_prep_time_s": 0.0,
+        "policy_dict_time_s": 0.0,
+        "softmax_time_s": 0.0,
+        "dirichlet_noise_time_s": 0.0,
+        "expand_time_s": 0.0,
+        "expand_deepcopy_time_s": 0.0,
+        "expand_env_step_time_s": 0.0,
+        "expand_node_init_time_s": 0.0,
+        "expanded_children": 0,
+        "backprop_time_s": 0.0,
+        "terminal_backprop_time_s": 0.0,
+        "selection_depth_total": 0.0,
+        "max_leaf_depth": 0.0,
     }
 
 
@@ -120,22 +141,56 @@ def _accumulate_search_stats(accumulator: dict, search_stats: dict | None) -> No
     if not search_stats:
         return
     accumulator["steps"] += 1
-    accumulator["search_time_s"] += float(search_stats.get("search_time_s", 0.0))
-    accumulator["rollouts"] += int(search_stats.get("rollouts", 0))
-    accumulator["rollout_time_s"] += float(search_stats.get("rollout_time_s", 0.0))
-    accumulator["inference_calls"] += int(search_stats.get("inference_calls", 0))
-    accumulator["inference_time_s"] += float(search_stats.get("inference_time_s", 0.0))
+    for key in (
+        "search_time_s",
+        "root_prepare_time_s",
+        "search_overhead_s",
+        "rollout_time_s",
+        "inference_time_s",
+        "traverse_time_s",
+        "ensure_stack_time_s",
+        "stack_init_time_s",
+        "stack_parent_copy_time_s",
+        "observation_time_s",
+        "stack_update_time_s",
+        "tensor_prep_time_s",
+        "policy_dict_time_s",
+        "softmax_time_s",
+        "dirichlet_noise_time_s",
+        "expand_time_s",
+        "expand_deepcopy_time_s",
+        "expand_env_step_time_s",
+        "expand_node_init_time_s",
+        "backprop_time_s",
+        "terminal_backprop_time_s",
+        "selection_depth_total",
+    ):
+        accumulator[key] += float(search_stats.get(key, 0.0))
+    for key in ("rollouts", "inference_calls", "expanded_children"):
+        accumulator[key] += int(search_stats.get(key, 0))
+    accumulator["max_leaf_depth"] = max(
+        float(accumulator["max_leaf_depth"]),
+        float(search_stats.get("max_leaf_depth", 0.0)),
+    )
 
 
 def _format_step_search_stats(search_stats: dict | None) -> str:
     if not search_stats:
         return "mcts=unavailable"
+    avg_leaf_depth = float(search_stats.get("avg_leaf_depth", 0.0))
     return (
-        f"mcts_rollouts={int(search_stats.get('rollouts', 0))} "
+        f"root={float(search_stats.get('root_prepare_time_s', 0.0)):.2f}s "
         f"search={float(search_stats.get('search_time_s', 0.0)):.2f}s "
-        f"mcts_rps={float(search_stats.get('effective_rollouts_per_sec', 0.0)):.2f} "
-        f"nn_calls={int(search_stats.get('inference_calls', 0))} "
-        f"nn_avg={float(search_stats.get('avg_inference_ms', 0.0)):.1f}ms/state"
+        f"rollouts={int(search_stats.get('rollouts', 0))} "
+        f"rps={float(search_stats.get('effective_rollouts_per_sec', 0.0)):.2f} "
+        f"nn={float(search_stats.get('avg_inference_ms', 0.0)):.1f}ms/state "
+        f"traverse={float(search_stats.get('traverse_time_s', 0.0)):.2f}s "
+        f"leaf_stack={float(search_stats.get('ensure_stack_time_s', 0.0)):.2f}s "
+        f"expand={float(search_stats.get('expand_time_s', 0.0)):.2f}s "
+        f"copy={float(search_stats.get('expand_deepcopy_time_s', 0.0)):.2f}s "
+        f"env={float(search_stats.get('expand_env_step_time_s', 0.0)):.2f}s "
+        f"backprop={float(search_stats.get('backprop_time_s', 0.0)):.2f}s "
+        f"depth={avg_leaf_depth:.1f}"
     )
 
 
@@ -144,17 +199,37 @@ def _format_episode_search_summary(accumulator: dict) -> str:
     rollouts = int(accumulator["rollouts"])
     inference_calls = int(accumulator["inference_calls"])
     search_time_s = float(accumulator["search_time_s"])
+    root_prepare_time_s = float(accumulator["root_prepare_time_s"])
     rollout_time_s = float(accumulator["rollout_time_s"])
     inference_time_s = float(accumulator["inference_time_s"])
+    traverse_time_s = float(accumulator["traverse_time_s"])
+    ensure_stack_time_s = float(accumulator["ensure_stack_time_s"])
+    expand_time_s = float(accumulator["expand_time_s"])
+    expand_deepcopy_time_s = float(accumulator["expand_deepcopy_time_s"])
+    expand_env_step_time_s = float(accumulator["expand_env_step_time_s"])
+    backprop_time_s = float(accumulator["backprop_time_s"])
+    selection_depth_total = float(accumulator["selection_depth_total"])
     avg_search_s = 0.0 if decisions == 0 else search_time_s / decisions
+    avg_root_prepare_s = 0.0 if decisions == 0 else root_prepare_time_s / decisions
     avg_rollouts = 0.0 if decisions == 0 else rollouts / decisions
     avg_inference_ms = 0.0 if inference_calls == 0 else 1000.0 * inference_time_s / inference_calls
     avg_rollout_ms = 0.0 if rollouts == 0 else 1000.0 * rollout_time_s / rollouts
     effective_rollouts_per_sec = 0.0 if search_time_s <= 0.0 else rollouts / search_time_s
+    avg_traverse_s = 0.0 if decisions == 0 else traverse_time_s / decisions
+    avg_leaf_stack_s = 0.0 if decisions == 0 else ensure_stack_time_s / decisions
+    avg_expand_s = 0.0 if decisions == 0 else expand_time_s / decisions
+    avg_copy_s = 0.0 if decisions == 0 else expand_deepcopy_time_s / decisions
+    avg_env_s = 0.0 if decisions == 0 else expand_env_step_time_s / decisions
+    avg_backprop_s = 0.0 if decisions == 0 else backprop_time_s / decisions
+    avg_leaf_depth = 0.0 if rollouts == 0 else selection_depth_total / rollouts
     return (
-        f"decisions={decisions} avg_search={avg_search_s:.2f}s "
-        f"avg_rollouts={avg_rollouts:.1f} mcts_rps={effective_rollouts_per_sec:.2f} "
-        f"nn_avg={avg_inference_ms:.1f}ms/state avg_rollout={avg_rollout_ms:.1f}ms"
+        f"decisions={decisions} avg_root={avg_root_prepare_s:.2f}s avg_search={avg_search_s:.2f}s "
+        f"avg_rollouts={avg_rollouts:.1f} rps={effective_rollouts_per_sec:.2f} "
+        f"nn_avg={avg_inference_ms:.1f}ms/state avg_rollout={avg_rollout_ms:.1f}ms "
+        f"avg_traverse={avg_traverse_s:.2f}s avg_leaf_stack={avg_leaf_stack_s:.2f}s "
+        f"avg_expand={avg_expand_s:.2f}s avg_copy={avg_copy_s:.2f}s avg_env={avg_env_s:.2f}s "
+        f"avg_backprop={avg_backprop_s:.2f}s avg_depth={avg_leaf_depth:.1f} "
+        f"max_depth={int(accumulator['max_leaf_depth'])}"
     )
 
 

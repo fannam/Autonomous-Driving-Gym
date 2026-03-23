@@ -21,6 +21,16 @@ TERMINAL_TIMEOUT_VALUE = 0.0
 TERMINAL_FAILURE_VALUE = -1.0
 
 
+def _record_timing(stats: dict | None, key: str, elapsed_s: float) -> None:
+    if stats is not None:
+        stats[key] = float(stats.get(key, 0.0)) + float(elapsed_s)
+
+
+def _record_counter(stats: dict | None, key: str, increment: int = 1) -> None:
+    if stats is not None:
+        stats[key] = int(stats.get(key, 0)) + int(increment)
+
+
 def _resolve_mcts_device(device=None, use_cuda=False) -> torch.device:
     if device is not None:
         resolved_device = torch.device(device)
@@ -93,23 +103,53 @@ class MCTSNode:
         if not defer_stack_init:
             self.ensure_stack_of_planes()
 
-    def ensure_stack_of_planes(self):
+    def ensure_stack_of_planes(self, timing_stats: dict | None = None):
         if self.stack_of_planes is not None:
             return
 
+        ensure_started_at = time.perf_counter()
         if self.parent is None:
+            stack_init_started_at = time.perf_counter()
             parent_stack = init_state_stack(self.stack_config)
+            _record_timing(
+                timing_stats,
+                "stack_init_time_s",
+                time.perf_counter() - stack_init_started_at,
+            )
         else:
             # Child nodes must not mutate the parent's cached stack.
-            self.parent.ensure_stack_of_planes()
+            self.parent.ensure_stack_of_planes(timing_stats=timing_stats)
+            parent_copy_started_at = time.perf_counter()
             parent_stack = self.parent.stack_of_planes.copy()
+            _record_timing(
+                timing_stats,
+                "stack_parent_copy_time_s",
+                time.perf_counter() - parent_copy_started_at,
+            )
 
+        observation_started_at = time.perf_counter()
         observation = self.env.unwrapped.observation_type.observe()
+        _record_timing(
+            timing_stats,
+            "observation_time_s",
+            time.perf_counter() - observation_started_at,
+        )
+        stack_update_started_at = time.perf_counter()
         self.stack_of_planes = update_state_stack(
             self.env,
             parent_stack,
             observation,
             stack_config=self.stack_config,
+        )
+        _record_timing(
+            timing_stats,
+            "stack_update_time_s",
+            time.perf_counter() - stack_update_started_at,
+        )
+        _record_timing(
+            timing_stats,
+            "ensure_stack_time_s",
+            time.perf_counter() - ensure_started_at,
         )
 
     def pucb_score(self, c_puct=2):
@@ -123,13 +163,28 @@ class MCTSNode:
             return None
         return max(self.children.values(), key=lambda child: child.pucb_score(c_puct))
 
-    def expand(self, action_priors):
+    def expand(self, action_priors, timing_stats: dict | None = None):
+        expand_started_at = time.perf_counter()
+        children_created = 0
         for action in self.available_actions:
             prob = action_priors.get(action, 0.0)
             if action in self.children or prob <= 0:
                 continue
+            deepcopy_started_at = time.perf_counter()
             next_env = copy.deepcopy(self.env)
+            _record_timing(
+                timing_stats,
+                "expand_deepcopy_time_s",
+                time.perf_counter() - deepcopy_started_at,
+            )
+            env_step_started_at = time.perf_counter()
             next_env.step(action)
+            _record_timing(
+                timing_stats,
+                "expand_env_step_time_s",
+                time.perf_counter() - env_step_started_at,
+            )
+            child_init_started_at = time.perf_counter()
             self.children[action] = MCTSNode(
                 next_env,
                 self,
@@ -139,6 +194,18 @@ class MCTSNode:
                 copy_env=False,
                 defer_stack_init=True,
             )
+            _record_timing(
+                timing_stats,
+                "expand_node_init_time_s",
+                time.perf_counter() - child_init_started_at,
+            )
+            children_created += 1
+        _record_timing(
+            timing_stats,
+            "expand_time_s",
+            time.perf_counter() - expand_started_at,
+        )
+        _record_counter(timing_stats, "expanded_children", children_created)
 
     def is_leaf(self):
         return self.children == {}
@@ -182,14 +249,34 @@ class MCTS:
             "rollouts": 0,
             "terminal_rollouts": 0,
             "inference_calls": 0,
+            "expanded_children": 0,
             "rollout_time_s": 0.0,
             "inference_time_s": 0.0,
+            "traverse_time_s": 0.0,
+            "ensure_stack_time_s": 0.0,
+            "stack_init_time_s": 0.0,
+            "stack_parent_copy_time_s": 0.0,
+            "observation_time_s": 0.0,
+            "stack_update_time_s": 0.0,
+            "tensor_prep_time_s": 0.0,
+            "policy_dict_time_s": 0.0,
+            "softmax_time_s": 0.0,
+            "dirichlet_noise_time_s": 0.0,
+            "expand_time_s": 0.0,
+            "expand_deepcopy_time_s": 0.0,
+            "expand_env_step_time_s": 0.0,
+            "expand_node_init_time_s": 0.0,
+            "backprop_time_s": 0.0,
+            "terminal_backprop_time_s": 0.0,
+            "selection_depth_total": 0,
+            "max_leaf_depth": 0,
         }
 
     def get_timing_stats(self):
         rollouts = int(self._timing_stats["rollouts"])
         terminal_rollouts = int(self._timing_stats["terminal_rollouts"])
         inference_calls = int(self._timing_stats["inference_calls"])
+        expanded_children = int(self._timing_stats["expanded_children"])
         rollout_time_s = float(self._timing_stats["rollout_time_s"])
         inference_time_s = float(self._timing_stats["inference_time_s"])
         avg_rollout_ms = 0.0 if rollouts == 0 else 1000.0 * rollout_time_s / rollouts
@@ -201,24 +288,55 @@ class MCTS:
             "rollouts": rollouts,
             "terminal_rollouts": terminal_rollouts,
             "inference_calls": inference_calls,
+            "expanded_children": expanded_children,
             "rollout_time_s": rollout_time_s,
             "inference_time_s": inference_time_s,
+            "traverse_time_s": float(self._timing_stats["traverse_time_s"]),
+            "ensure_stack_time_s": float(self._timing_stats["ensure_stack_time_s"]),
+            "stack_init_time_s": float(self._timing_stats["stack_init_time_s"]),
+            "stack_parent_copy_time_s": float(self._timing_stats["stack_parent_copy_time_s"]),
+            "observation_time_s": float(self._timing_stats["observation_time_s"]),
+            "stack_update_time_s": float(self._timing_stats["stack_update_time_s"]),
+            "tensor_prep_time_s": float(self._timing_stats["tensor_prep_time_s"]),
+            "policy_dict_time_s": float(self._timing_stats["policy_dict_time_s"]),
+            "softmax_time_s": float(self._timing_stats["softmax_time_s"]),
+            "dirichlet_noise_time_s": float(self._timing_stats["dirichlet_noise_time_s"]),
+            "expand_time_s": float(self._timing_stats["expand_time_s"]),
+            "expand_deepcopy_time_s": float(self._timing_stats["expand_deepcopy_time_s"]),
+            "expand_env_step_time_s": float(self._timing_stats["expand_env_step_time_s"]),
+            "expand_node_init_time_s": float(self._timing_stats["expand_node_init_time_s"]),
+            "backprop_time_s": float(self._timing_stats["backprop_time_s"]),
+            "terminal_backprop_time_s": float(self._timing_stats["terminal_backprop_time_s"]),
+            "selection_depth_total": int(self._timing_stats["selection_depth_total"]),
+            "max_leaf_depth": int(self._timing_stats["max_leaf_depth"]),
             "avg_rollout_ms": avg_rollout_ms,
             "avg_inference_ms": avg_inference_ms,
             "rollouts_per_sec": rollouts_per_sec,
+            "avg_expanded_children": 0.0 if rollouts == 0 else expanded_children / rollouts,
+            "avg_leaf_depth": 0.0
+            if rollouts == 0
+            else float(self._timing_stats["selection_depth_total"]) / rollouts,
         }
 
     def traverse_to_leaf(self):
         node = self.root
+        depth = 0
         while not node.is_leaf():
             node = node.select(self.c_puct)
-        return node
+            depth += 1
+        return node, depth
 
     def _predict_policy_value(self, leaf_node):
-        leaf_node.ensure_stack_of_planes()
+        leaf_node.ensure_stack_of_planes(timing_stats=self._timing_stats)
+        tensor_prep_started_at = time.perf_counter()
         state_tensor = torch.from_numpy(leaf_node.stack_of_planes).unsqueeze(0).to(
             device=self._device,
             non_blocking=self._device.type != "cpu",
+        )
+        _record_timing(
+            self._timing_stats,
+            "tensor_prep_time_s",
+            time.perf_counter() - tensor_prep_started_at,
         )
 
         if self._device.type == "cuda":
@@ -232,7 +350,13 @@ class MCTS:
         self._timing_stats["inference_calls"] += 1
         self._timing_stats["inference_time_s"] += inference_elapsed
 
+        policy_dict_started_at = time.perf_counter()
         policy_dict = {action: prob for action, prob in enumerate(predicted_policy.squeeze().tolist())}
+        _record_timing(
+            self._timing_stats,
+            "policy_dict_time_s",
+            time.perf_counter() - policy_dict_started_at,
+        )
         return policy_dict, predicted_value.item()
 
     def _compute_rollout_value(self, truncated, terminated, crashed, success, predicted_value):
@@ -276,7 +400,18 @@ class MCTS:
 
     def rollout(self):
         rollout_started_at = time.perf_counter()
-        leaf_node = self.traverse_to_leaf()
+        traverse_started_at = time.perf_counter()
+        leaf_node, leaf_depth = self.traverse_to_leaf()
+        _record_timing(
+            self._timing_stats,
+            "traverse_time_s",
+            time.perf_counter() - traverse_started_at,
+        )
+        _record_counter(self._timing_stats, "selection_depth_total", leaf_depth)
+        self._timing_stats["max_leaf_depth"] = max(
+            int(self._timing_stats["max_leaf_depth"]),
+            int(leaf_depth),
+        )
         try:
             truncated = leaf_node.truncated
             terminated = leaf_node.terminated
@@ -292,18 +427,36 @@ class MCTS:
                     success,
                     predicted_value=0.0,
                 )
+                backprop_started_at = time.perf_counter()
                 leaf_node.backpropagate_recursive(rollout_value)
+                _record_timing(
+                    self._timing_stats,
+                    "terminal_backprop_time_s",
+                    time.perf_counter() - backprop_started_at,
+                )
                 return
 
             predicted_policy, predicted_value = self._predict_policy_value(leaf_node)
+            softmax_started_at = time.perf_counter()
             updated_policy = softmax_policy(predicted_policy, leaf_node.available_actions)
+            _record_timing(
+                self._timing_stats,
+                "softmax_time_s",
+                time.perf_counter() - softmax_started_at,
+            )
             if leaf_node is self.root and self._pending_root_noise:
+                root_noise_started_at = time.perf_counter()
                 updated_policy = self._apply_dirichlet_noise_to_policy(
                     updated_policy,
                     leaf_node.available_actions,
                 )
+                _record_timing(
+                    self._timing_stats,
+                    "dirichlet_noise_time_s",
+                    time.perf_counter() - root_noise_started_at,
+                )
                 self._pending_root_noise = False
-            leaf_node.expand(updated_policy)
+            leaf_node.expand(updated_policy, timing_stats=self._timing_stats)
 
             rollout_value = self._compute_rollout_value(
                 truncated,
@@ -312,7 +465,13 @@ class MCTS:
                 success,
                 predicted_value,
             )
+            backprop_started_at = time.perf_counter()
             leaf_node.backpropagate_recursive(rollout_value)
+            _record_timing(
+                self._timing_stats,
+                "backprop_time_s",
+                time.perf_counter() - backprop_started_at,
+            )
         finally:
             self._timing_stats["rollouts"] += 1
             self._timing_stats["rollout_time_s"] += time.perf_counter() - rollout_started_at
