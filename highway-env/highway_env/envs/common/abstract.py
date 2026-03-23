@@ -304,6 +304,26 @@ class AbstractEnv(gym.Env):
 
         return obs, reward, terminated, truncated, info
 
+    def step_for_mcts(self, action: Action) -> None:
+        """
+        Advance the environment state for MCTS expansion without materializing
+        observation/reward/info payloads for every expanded child.
+        """
+        if self.road is None or self.vehicle is None:
+            raise NotImplementedError(
+                "The road and vehicle must be initialized in the environment implementation"
+            )
+
+        step_started_at = time.perf_counter()
+        step_profile = self._empty_step_profile()
+        self.time += 1 / self.config["policy_frequency"]
+        simulate_started_at = time.perf_counter()
+        self._simulate(action)
+        step_profile["simulate_time_s"] = time.perf_counter() - simulate_started_at
+        step_profile["simulation"] = copy.deepcopy(self._last_simulation_profile)
+        step_profile["step_time_s"] = time.perf_counter() - step_started_at
+        self._last_step_profile = step_profile
+
     def _simulate(self, action: Action | None = None) -> None:
         """Perform several steps of simulation with constant action."""
         simulation_started_at = time.perf_counter()

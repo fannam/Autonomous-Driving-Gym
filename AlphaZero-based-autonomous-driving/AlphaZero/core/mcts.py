@@ -268,7 +268,12 @@ class MCTSNode:
                 time.perf_counter() - deepcopy_started_at,
             )
             env_step_started_at = time.perf_counter()
-            next_env.step(action)
+            env_unwrapped = getattr(next_env, "unwrapped", next_env)
+            step_for_mcts = getattr(env_unwrapped, "step_for_mcts", None)
+            if callable(step_for_mcts):
+                step_for_mcts(action)
+            else:
+                next_env.step(action)
             _record_timing(
                 timing_stats,
                 "expand_env_step_time_s",
