@@ -232,6 +232,120 @@ def _worker_entry(task: dict, result_queue):
         )
 
 
+def _parse_gpu_indices(raw_value: str | None) -> list[int] | None:
+    if raw_value is None:
+        return None
+
+    values = []
+    for chunk in raw_value.split(","):
+        item = chunk.strip()
+        if not item:
+            continue
+        index = int(item)
+        if index < 0:
+            raise ValueError("GPU indices must be non-negative integers.")
+        if index not in values:
+            values.append(index)
+    return values or None
+
+
+def _capability_tag(major: int, minor: int) -> str:
+    return f"sm_{major}{minor}"
+
+
+def _discover_supported_cuda_devices(
+    selected_indices: list[int] | None,
+) -> tuple[list[int], list[dict], int]:
+    if not torch.cuda.is_available():
+        return [], [], 0
+
+    total_devices = torch.cuda.device_count()
+    candidate_indices = (
+        list(range(total_devices))
+        if selected_indices is None
+        else list(selected_indices)
+    )
+    arch_list = {str(item) for item in torch.cuda.get_arch_list()}
+    supported_indices = []
+    unsupported_devices = []
+
+    for index in candidate_indices:
+        if index >= total_devices:
+            raise ValueError(
+                f"Requested CUDA device index {index}, but only {total_devices} visible device(s) exist."
+            )
+        properties = torch.cuda.get_device_properties(index)
+        capability = _capability_tag(properties.major, properties.minor)
+        if arch_list and capability not in arch_list:
+            unsupported_devices.append(
+                {
+                    "index": index,
+                    "name": properties.name,
+                    "capability": capability,
+                }
+            )
+            continue
+        supported_indices.append(index)
+
+    return supported_indices, unsupported_devices, total_devices
+
+
+def _resolve_worker_devices(args: argparse.Namespace) -> list[str]:
+    requested_device = str(args.device).lower()
+    gpu_indices = _parse_gpu_indices(args.gpu_indices)
+    num_gpus = None if args.num_gpus is None else int(args.num_gpus)
+    if num_gpus is not None and num_gpus <= 0:
+        raise ValueError("--num-gpus must be a positive integer.")
+
+    if requested_device == "cpu":
+        if gpu_indices is not None or num_gpus is not None:
+            print(
+                "Ignoring --gpu-indices/--num-gpus because --device=cpu was requested.",
+                flush=True,
+            )
+        return ["cpu"] * int(args.workers)
+
+    if requested_device.startswith("cuda:"):
+        if gpu_indices is not None or num_gpus is not None:
+            raise ValueError(
+                "--gpu-indices and --num-gpus cannot be combined with an explicit device like cuda:0."
+            )
+        return [requested_device] * int(args.workers)
+
+    if requested_device not in {"auto", "cuda"}:
+        if gpu_indices is not None or num_gpus is not None:
+            raise ValueError(
+                "--gpu-indices and --num-gpus are supported only with --device=auto or --device=cuda."
+            )
+        return [args.device] * int(args.workers)
+
+    supported_indices, unsupported_devices, total_devices = _discover_supported_cuda_devices(
+        gpu_indices
+    )
+    if num_gpus is not None:
+        supported_indices = supported_indices[:num_gpus]
+
+    if unsupported_devices:
+        skipped = ", ".join(
+            f"cuda:{item['index']} ({item['name']} {item['capability']})"
+            for item in unsupported_devices
+        )
+        print(f"Skipping incompatible CUDA devices: {skipped}", flush=True)
+
+    if not supported_indices:
+        if requested_device == "auto":
+            if total_devices > 0:
+                print(
+                    "No compatible CUDA devices available for this PyTorch build. Falling back to CPU.",
+                    flush=True,
+                )
+            return ["cpu"] * int(args.workers)
+        raise RuntimeError("No compatible CUDA devices available for --device=cuda.")
+
+    worker_count = int(args.workers)
+    return [f"cuda:{supported_indices[index % len(supported_indices)]}" for index in range(worker_count)]
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Parallel self-play for racetrack-v0.")
     parser.add_argument("--workers", type=int, default=2, help="Number of parallel worker processes.")
@@ -284,6 +398,23 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default="auto",
         help="Torch device for neural inference/training in workers: auto|cpu|cuda|cuda:0",
+    )
+    parser.add_argument(
+        "--num-gpus",
+        type=int,
+        default=None,
+        help=(
+            "Maximum number of compatible CUDA devices to use when --device=auto or --device=cuda. "
+            "Workers are assigned round-robin across the selected GPUs."
+        ),
+    )
+    parser.add_argument(
+        "--gpu-indices",
+        default=None,
+        help=(
+            "Comma-separated CUDA device indices to use when --device=auto or --device=cuda, "
+            "for example: 0,1,3"
+        ),
     )
     parser.add_argument("--n-residual-layers", type=int, default=10)
     parser.add_argument("--torch-threads-per-worker", type=int, default=1)
@@ -338,6 +469,8 @@ def main():
     )
     output_dir = Path(args.output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
+    worker_devices = _resolve_worker_devices(args)
+    unique_worker_devices = list(dict.fromkeys(worker_devices))
 
     model_path = None
     created_temp_model = False
@@ -370,6 +503,13 @@ def main():
     print(f"dirichlet_alpha={root_dirichlet_alpha}, root_exploration_fraction={root_exploration_fraction}")
     print(f"mcts_max_root_visits={args.mcts_max_root_visits}")
     print(f"device={args.device}")
+    print(f"resolved_worker_devices={unique_worker_devices}")
+    print(
+        "worker_device_assignments="
+        + ", ".join(
+            f"worker_{worker_id}:{device}" for worker_id, device in enumerate(worker_devices)
+        )
+    )
     print(f"model_path={model_path}")
     print(f"output_dir={output_dir}")
 
@@ -399,7 +539,7 @@ def main():
             "learning_rate": config.learning_rate,
             "weight_decay": config.weight_decay,
             "mcts_max_root_visits": args.mcts_max_root_visits,
-            "device": args.device,
+            "device": worker_devices[worker_id],
             "temperature": temperature,
             "temperature_drop_step": temperature_drop_step,
             "add_root_dirichlet_noise": True,

@@ -21,6 +21,7 @@ DEFAULT_OUTPUT_DIR = Path(
     "AlphaZero-based-autonomous-driving/outputs/racetrack_self_play_parallel"
 )
 DEFAULT_ERROR_TAIL_LINES = 60
+DEFAULT_CPU_RESULT_TIMEOUT_SECONDS = 14_400
 
 
 def log(message: str) -> None:
@@ -356,6 +357,33 @@ def resolve_self_play_device(
     return passthrough_args, runtime_env
 
 
+def apply_cpu_run_guards(passthrough_args: list[str]) -> list[str]:
+    effective_device = (get_option_value(passthrough_args, "--device") or "auto").lower()
+    if effective_device != "cpu":
+        return passthrough_args
+
+    updated_args = list(passthrough_args)
+    if get_option_value(updated_args, "--result-timeout") is None:
+        updated_args = upsert_option(
+            updated_args,
+            "--result-timeout",
+            str(DEFAULT_CPU_RESULT_TIMEOUT_SECONDS),
+        )
+        log(
+            "CPU run detected; increasing --result-timeout to "
+            f"{DEFAULT_CPU_RESULT_TIMEOUT_SECONDS}s."
+        )
+
+    if get_option_value(updated_args, "--max-steps-per-episode") is None:
+        log(
+            "CPU run with no --max-steps-per-episode can take hours. "
+            "Consider adding --workers 1 --episodes-per-worker 1 "
+            "--n-simulations 2 --max-steps-per-episode 10 for Kaggle."
+        )
+
+    return updated_args
+
+
 def resolve_runner(
     repo_dir: Path,
     *,
@@ -528,6 +556,7 @@ def main() -> int:
         passthrough_args,
         runtime_env,
     )
+    passthrough_args = apply_cpu_run_guards(passthrough_args)
     self_play_command = build_self_play_command(runner_prefix, passthrough_args)
     log(
         "Runtime overrides: "
