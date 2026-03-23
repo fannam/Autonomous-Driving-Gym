@@ -19,6 +19,7 @@ SELF_PLAY_SCRIPT = Path(
 DEFAULT_OUTPUT_DIR = Path(
     "AlphaZero-based-autonomous-driving/outputs/racetrack_self_play_parallel"
 )
+DEFAULT_ERROR_TAIL_LINES = 60
 
 
 def log(message: str) -> None:
@@ -29,13 +30,49 @@ def format_command(parts: list[str]) -> str:
     return " ".join(shlex.quote(part) for part in parts)
 
 
-def run_command(parts: list[str], *, cwd: Path | None = None) -> None:
+def run_command(
+    parts: list[str],
+    *,
+    cwd: Path | None = None,
+    env: dict[str, str] | None = None,
+    quiet: bool = False,
+    success_message: str | None = None,
+) -> None:
     command_display = format_command(parts)
     if cwd is not None:
         log(f"$ {command_display}  (cwd={cwd})")
     else:
         log(f"$ {command_display}")
-    subprocess.run(parts, cwd=str(cwd) if cwd is not None else None, check=True)
+    if not quiet:
+        subprocess.run(
+            parts,
+            cwd=str(cwd) if cwd is not None else None,
+            env=env,
+            check=True,
+        )
+        return
+
+    completed = subprocess.run(
+        parts,
+        cwd=str(cwd) if cwd is not None else None,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    if completed.returncode != 0:
+        output = completed.stdout or ""
+        tail = "\n".join(output.strip().splitlines()[-DEFAULT_ERROR_TAIL_LINES:])
+        if tail:
+            log("Command output tail:")
+            print(tail, flush=True)
+        raise subprocess.CalledProcessError(
+            completed.returncode,
+            parts,
+            output=completed.stdout,
+        )
+    if success_message:
+        log(success_message)
 
 
 def is_repo_root(path: Path) -> bool:
@@ -60,7 +97,14 @@ def derive_repo_dir(repo_url: str, requested_repo_dir: str | None) -> Path:
     return (cwd / repo_name).resolve()
 
 
-def clone_repo(repo_url: str, repo_dir: Path, *, branch: str | None, clone_depth: int | None) -> Path:
+def clone_repo(
+    repo_url: str,
+    repo_dir: Path,
+    *,
+    branch: str | None,
+    clone_depth: int | None,
+    quiet: bool,
+) -> Path:
     if is_repo_root(repo_dir):
         log(f"Reusing existing repository: {repo_dir}")
         return repo_dir
@@ -79,7 +123,11 @@ def clone_repo(repo_url: str, repo_dir: Path, *, branch: str | None, clone_depth
             raise ValueError("--clone-depth must be a positive integer.")
         command.extend(["--depth", str(clone_depth)])
     command.extend([repo_url, str(repo_dir)])
-    run_command(command)
+    run_command(
+        command,
+        quiet=quiet,
+        success_message=f"Repository cloned into: {repo_dir}",
+    )
     return repo_dir
 
 
@@ -99,27 +147,74 @@ def venv_python_path(venv_dir: Path) -> Path:
     return venv_dir / "bin" / "python"
 
 
-def install_with_uv(repo_dir: Path) -> str:
+def install_with_uv(repo_dir: Path, *, quiet: bool) -> str:
     if shutil.which("uv") is None:
         raise RuntimeError("Installer 'uv' was requested, but the 'uv' binary was not found.")
-    run_command(["uv", "sync"], cwd=repo_dir)
+    env = os.environ.copy()
+    env["PYTHONUNBUFFERED"] = "1"
+    run_command(
+        ["uv", "sync"],
+        cwd=repo_dir,
+        env=env,
+        quiet=quiet,
+        success_message="Dependencies installed with uv.",
+    )
     return "uv"
 
 
-def install_with_pip(repo_dir: Path, *, venv_dir: Path | None) -> Path:
+def install_with_pip(repo_dir: Path, *, venv_dir: Path | None, quiet: bool) -> Path:
     target_venv_dir = (venv_dir or (repo_dir / ".venv")).resolve()
     python_bin = venv_python_path(target_venv_dir)
+    env = os.environ.copy()
+    env["PYTHONUNBUFFERED"] = "1"
+    env["PIP_PROGRESS_BAR"] = "off"
 
     if not python_bin.exists():
-        run_command([sys.executable, "-m", "venv", str(target_venv_dir)], cwd=repo_dir)
+        run_command(
+            [sys.executable, "-m", "venv", str(target_venv_dir)],
+            cwd=repo_dir,
+            env=env,
+            quiet=quiet,
+            success_message=f"Created virtual environment: {target_venv_dir}",
+        )
 
-    run_command([str(python_bin), "-m", "pip", "install", "--upgrade", "pip"], cwd=repo_dir)
-    run_command([str(python_bin), "-m", "pip", "install", "-e", "highway-env"], cwd=repo_dir)
     run_command(
-        [str(python_bin), "-m", "pip", "install", "-e", "AlphaZero-based-autonomous-driving"],
+        [str(python_bin), "-m", "pip", "install", "--upgrade", "pip", "--quiet"],
         cwd=repo_dir,
+        env=env,
+        quiet=quiet,
+        success_message="Upgraded pip in the virtual environment.",
+    )
+    run_command(
+        [str(python_bin), "-m", "pip", "install", "--quiet", "-e", "highway-env"],
+        cwd=repo_dir,
+        env=env,
+        quiet=quiet,
+        success_message="Installed editable dependency: highway-env.",
+    )
+    run_command(
+        [
+            str(python_bin),
+            "-m",
+            "pip",
+            "install",
+            "--quiet",
+            "-e",
+            "AlphaZero-based-autonomous-driving",
+        ],
+        cwd=repo_dir,
+        env=env,
+        quiet=quiet,
+        success_message="Installed editable package: AlphaZero-based-autonomous-driving.",
     )
     return python_bin
+
+
+def build_runtime_env(matplotlib_backend: str) -> dict[str, str]:
+    env = os.environ.copy()
+    env["PYTHONUNBUFFERED"] = "1"
+    env["MPLBACKEND"] = matplotlib_backend
+    return env
 
 
 def resolve_runner(
@@ -128,22 +223,27 @@ def resolve_runner(
     installer: str,
     skip_install: bool,
     venv_dir: Path | None,
+    quiet_install: bool,
 ) -> tuple[list[str], str]:
     selected_installer = choose_installer(installer)
 
     if selected_installer == "uv":
         if not skip_install:
             try:
-                install_with_uv(repo_dir)
+                install_with_uv(repo_dir, quiet=quiet_install)
             except subprocess.CalledProcessError:
                 if installer != "auto":
                     raise
                 log("uv installation failed in auto mode. Falling back to venv + pip.")
-                python_bin = install_with_pip(repo_dir, venv_dir=venv_dir)
-                return [str(python_bin)], str(python_bin)
+                python_bin = install_with_pip(
+                    repo_dir,
+                    venv_dir=venv_dir,
+                    quiet=quiet_install,
+                )
+                return [str(python_bin), "-u"], str(python_bin)
         elif shutil.which("uv") is None:
             raise RuntimeError("Cannot skip install with installer 'uv' because 'uv' is not available.")
-        return ["uv", "run", "python"], "uv"
+        return ["uv", "run", "python", "-u"], "uv"
 
     if selected_installer != "pip":
         raise RuntimeError(f"Unsupported installer: {selected_installer}")
@@ -154,8 +254,12 @@ def resolve_runner(
             f"Cannot skip install because the virtual environment does not exist yet: {python_bin}"
         )
     if not skip_install:
-        python_bin = install_with_pip(repo_dir, venv_dir=venv_dir)
-    return [str(python_bin)], str(python_bin)
+        python_bin = install_with_pip(
+            repo_dir,
+            venv_dir=venv_dir,
+            quiet=quiet_install,
+        )
+    return [str(python_bin), "-u"], str(python_bin)
 
 
 def build_self_play_command(runner_prefix: list[str], passthrough_args: list[str]) -> list[str]:
@@ -225,6 +329,16 @@ def parse_args() -> tuple[argparse.Namespace, list[str]]:
         action="store_true",
         help="Stop after clone/install without launching self-play.",
     )
+    parser.add_argument(
+        "--matplotlib-backend",
+        default="Agg",
+        help="Matplotlib backend forced for the self-play run. Use Agg on Kaggle/headless systems.",
+    )
+    parser.add_argument(
+        "--verbose-install",
+        action="store_true",
+        help="Show full clone/install command output instead of the default compact summaries.",
+    )
     args, passthrough_args = parser.parse_known_args()
     if passthrough_args and passthrough_args[0] == "--":
         passthrough_args = passthrough_args[1:]
@@ -249,6 +363,7 @@ def main() -> int:
             repo_dir,
             branch=args.branch,
             clone_depth=clone_depth,
+            quiet=not args.verbose_install,
         )
 
     if not is_repo_root(repo_dir):
@@ -259,6 +374,7 @@ def main() -> int:
         installer=args.installer,
         skip_install=args.skip_install,
         venv_dir=venv_dir,
+        quiet_install=not args.verbose_install,
     )
     log(f"Runner ready: {runner_display}")
 
@@ -267,9 +383,15 @@ def main() -> int:
         return 0
 
     self_play_command = build_self_play_command(runner_prefix, passthrough_args)
+    runtime_env = build_runtime_env(args.matplotlib_backend)
+    log(
+        "Runtime overrides: "
+        f"PYTHONUNBUFFERED={runtime_env['PYTHONUNBUFFERED']} "
+        f"MPLBACKEND={runtime_env['MPLBACKEND']}"
+    )
     if not passthrough_args:
         log("No self-play overrides were provided. Using the defaults from the repo script.")
-    run_command(self_play_command, cwd=repo_dir)
+    run_command(self_play_command, cwd=repo_dir, env=runtime_env)
     log(f"Self-play outputs are expected under: {repo_dir / DEFAULT_OUTPUT_DIR}")
     return 0
 
