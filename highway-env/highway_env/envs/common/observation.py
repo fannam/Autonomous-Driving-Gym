@@ -11,7 +11,7 @@ from gymnasium import spaces
 from highway_env import utils
 from highway_env.envs.common.finite_mdp import compute_ttc_grid
 from highway_env.envs.common.graphics import EnvViewer
-from highway_env.road.lane import AbstractLane
+from highway_env.road.lane import AbstractLane, CircularLane, StraightLane
 from highway_env.utils import Vector
 from highway_env.vehicle.kinematics import Vehicle
 
@@ -576,6 +576,94 @@ class DetailedOccupancyGridObservation(OccupancyGridObservation):
         self.footprint_margin = footprint_margin
         self.ttc_horizon = ttc_horizon
         self.distance_normalization = distance_normalization
+        self._cell_center_local_points = self._build_local_point_grid(subsamples=1)
+        self._soft_local_points = self._build_local_point_grid(
+            subsamples=self.on_road_subsamples
+        )
+
+    def _build_local_point_grid(self, subsamples: int) -> np.ndarray:
+        width = self.grid.shape[-2]
+        height = self.grid.shape[-1]
+        base_x = (
+            np.arange(width, dtype=np.float32) * self.grid_step[0] + self.grid_size[0, 0]
+        )
+        base_y = (
+            np.arange(height, dtype=np.float32) * self.grid_step[1] + self.grid_size[1, 0]
+        )
+        offset_x = (
+            (np.arange(subsamples, dtype=np.float32) + 0.5)
+            / float(subsamples)
+            * self.grid_step[0]
+        )
+        offset_y = (
+            (np.arange(subsamples, dtype=np.float32) + 0.5)
+            / float(subsamples)
+            * self.grid_step[1]
+        )
+
+        sample_points = []
+        for dx in offset_x:
+            for dy in offset_y:
+                xx, yy = np.meshgrid(base_x + dx, base_y + dy, indexing="ij")
+                sample_points.append(np.stack((xx, yy), axis=-1))
+        return np.stack(sample_points, axis=2).astype(np.float32, copy=False)
+
+    def _grid_local_points_to_world(self, local_points: np.ndarray) -> np.ndarray:
+        local_points = np.asarray(local_points, dtype=np.float32)
+        if self.align_to_vehicle_axes:
+            c, s = np.cos(-self.observer_vehicle.heading), np.sin(
+                -self.observer_vehicle.heading
+            )
+            rotation = np.array([[c, s], [-s, c]], dtype=np.float32)
+            local_points = local_points @ rotation.T
+        return local_points + np.asarray(
+            self.observer_vehicle.position,
+            dtype=np.float32,
+        )
+
+    def _lane_on_points_mask(
+        self,
+        lane: AbstractLane,
+        world_points: np.ndarray,
+    ) -> np.ndarray:
+        lane_type = lane.__class__
+        if lane_type is StraightLane:
+            delta = world_points - lane.start
+            longitudinal = delta @ lane.direction
+            lateral = delta @ lane.direction_lateral
+            return (
+                (np.abs(lateral) <= 0.5 * lane.width)
+                & (-lane.VEHICLE_LENGTH <= longitudinal)
+                & (longitudinal < lane.length + lane.VEHICLE_LENGTH)
+            )
+
+        if lane_type is CircularLane:
+            delta = world_points - lane.center
+            phi = np.arctan2(delta[:, 1], delta[:, 0])
+            phi = lane.start_phase + utils.wrap_to_pi(phi - lane.start_phase)
+            radius = np.linalg.norm(delta, axis=1)
+            longitudinal = lane.direction * (phi - lane.start_phase) * lane.radius
+            lateral = lane.direction * (lane.radius - radius)
+            return (
+                (np.abs(lateral) <= 0.5 * lane.width)
+                & (-lane.VEHICLE_LENGTH <= longitudinal)
+                & (longitudinal < lane.length + lane.VEHICLE_LENGTH)
+            )
+
+        return np.fromiter(
+            (lane.on_lane(point) for point in world_points),
+            dtype=bool,
+            count=world_points.shape[0],
+        )
+
+    def _road_mask_for_local_points(self, local_points: np.ndarray) -> np.ndarray:
+        world_points = self._grid_local_points_to_world(local_points.reshape(-1, 2))
+        on_road = np.zeros(world_points.shape[0], dtype=bool)
+        for lane in self.env.road.network.lanes_list():
+            on_road |= self._lane_on_points_mask(lane, world_points)
+            if on_road.all():
+                break
+        return on_road.reshape(local_points.shape[:-1])
 
     def observe(self) -> np.ndarray:
         if not self.env.road:
@@ -680,26 +768,14 @@ class DetailedOccupancyGridObservation(OccupancyGridObservation):
 
         This produces fractional values in [0, 1] for partially covered cells.
         """
-        road = self.env.road
-        lanes = road.network.lanes_list()
-        n = self.on_road_subsamples
-        offset_x = (np.arange(n, dtype=np.float32) + 0.5) / n * self.grid_step[0]
-        offset_y = (np.arange(n, dtype=np.float32) + 0.5) / n * self.grid_step[1]
-        total_samples = float(n * n)
+        self.grid[layer_index] = self._road_mask_for_local_points(
+            self._soft_local_points
+        ).mean(axis=2, dtype=np.float32)
 
-        for i, j in product(range(self.grid.shape[-2]), range(self.grid.shape[-1])):
-            x0 = i * self.grid_step[0] + self.grid_size[0, 0]
-            y0 = j * self.grid_step[1] + self.grid_size[1, 0]
-            on_count = 0
-
-            for dx in offset_x:
-                for dy in offset_y:
-                    local_point = np.array([x0 + dx, y0 + dy], dtype=np.float32)
-                    world_point = self._grid_to_world_frame(local_point)
-                    if any(lane.on_lane(world_point) for lane in lanes):
-                        on_count += 1
-
-            self.grid[layer_index, i, j] = on_count / total_samples
+    def fill_road_layer_by_cell(self, layer_index) -> None:
+        self.grid[layer_index] = self._road_mask_for_local_points(
+            self._cell_center_local_points
+        )[:, :, 0].astype(np.float32, copy=False)
 
     def _to_grid_frame(self, position: np.ndarray) -> np.ndarray:
         """

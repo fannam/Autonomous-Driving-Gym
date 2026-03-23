@@ -272,6 +272,8 @@ def _format_step_search_stats(search_stats: dict | None) -> str:
         f"nn={float(search_stats.get('avg_inference_ms', 0.0)):.1f}ms/state "
         f"traverse={float(search_stats.get('traverse_time_s', 0.0)):.2f}s "
         f"leaf_stack={float(search_stats.get('ensure_stack_time_s', 0.0)):.2f}s "
+        f"leaf_obs={float(search_stats.get('observation_time_s', 0.0)):.2f}s "
+        f"stack_upd={float(search_stats.get('stack_update_time_s', 0.0)):.2f}s "
         f"expand={float(search_stats.get('expand_time_s', 0.0)):.2f}s "
         f"copy={float(search_stats.get('expand_deepcopy_time_s', 0.0)):.2f}s "
         f"{_format_env_breakdown(search_stats)} "
@@ -303,6 +305,8 @@ def _format_episode_search_summary(accumulator: dict) -> str:
     effective_rollouts_per_sec = 0.0 if search_time_s <= 0.0 else rollouts / search_time_s
     avg_traverse_s = 0.0 if decisions == 0 else traverse_time_s / decisions
     avg_leaf_stack_s = 0.0 if decisions == 0 else ensure_stack_time_s / decisions
+    avg_leaf_obs_s = 0.0 if decisions == 0 else float(accumulator["observation_time_s"]) / decisions
+    avg_stack_upd_s = 0.0 if decisions == 0 else float(accumulator["stack_update_time_s"]) / decisions
     avg_expand_s = 0.0 if decisions == 0 else expand_time_s / decisions
     avg_copy_s = 0.0 if decisions == 0 else expand_deepcopy_time_s / decisions
     avg_env_s = 0.0 if decisions == 0 else expand_env_step_time_s / decisions
@@ -361,6 +365,7 @@ def _format_episode_search_summary(accumulator: dict) -> str:
         f"avg_rollouts={avg_rollouts:.1f} rps={effective_rollouts_per_sec:.2f} "
         f"nn_avg={avg_inference_ms:.1f}ms/state avg_rollout={avg_rollout_ms:.1f}ms "
         f"avg_traverse={avg_traverse_s:.2f}s avg_leaf_stack={avg_leaf_stack_s:.2f}s "
+        f"avg_leaf_obs={avg_leaf_obs_s:.2f}s avg_stack_upd={avg_stack_upd_s:.2f}s "
         f"avg_expand={avg_expand_s:.2f}s avg_copy={avg_copy_s:.2f}s avg_env={avg_env_s:.2f}s "
         f"avg_children={avg_children:.1f} avg_profiled_env={avg_profiled_env_s:.2f}s "
         f"env_per_child={avg_env_per_child_s:.2f}s avg_sim={avg_sim_s:.2f}s "
