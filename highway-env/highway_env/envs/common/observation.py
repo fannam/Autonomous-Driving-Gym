@@ -576,10 +576,22 @@ class DetailedOccupancyGridObservation(OccupancyGridObservation):
         self.footprint_margin = footprint_margin
         self.ttc_horizon = ttc_horizon
         self.distance_normalization = distance_normalization
+        self._presence_sample_x = (
+            (np.arange(self.presence_subsamples, dtype=np.float32) + 0.5)
+            / float(self.presence_subsamples)
+            * self.grid_step[0]
+        )
+        self._presence_sample_y = (
+            (np.arange(self.presence_subsamples, dtype=np.float32) + 0.5)
+            / float(self.presence_subsamples)
+            * self.grid_step[1]
+        )
         self._cell_center_local_points = self._build_local_point_grid(subsamples=1)
         self._soft_local_points = self._build_local_point_grid(
             subsamples=self.on_road_subsamples
         )
+        self._lane_cache_key: tuple[int, ...] | None = None
+        self._lane_spatial_bounds: dict[int, tuple[np.ndarray, np.ndarray] | None] = {}
 
     def _build_local_point_grid(self, subsamples: int) -> np.ndarray:
         width = self.grid.shape[-2]
@@ -621,49 +633,251 @@ class DetailedOccupancyGridObservation(OccupancyGridObservation):
             dtype=np.float32,
         )
 
+    def _ensure_lane_spatial_cache(
+        self,
+    ) -> tuple[tuple[AbstractLane, ...], dict[int, tuple[np.ndarray, np.ndarray] | None]]:
+        lanes = tuple(self.env.road.network.lanes_list())
+        lane_cache_key = tuple(id(lane) for lane in lanes)
+        if lane_cache_key != self._lane_cache_key:
+            self._lane_spatial_bounds = {
+                id(lane): self._lane_spatial_bounds_for(lane) for lane in lanes
+            }
+            self._lane_cache_key = lane_cache_key
+        return lanes, self._lane_spatial_bounds
+
+    def _lane_spatial_bounds_for(
+        self,
+        lane: AbstractLane,
+    ) -> tuple[np.ndarray, np.ndarray] | None:
+        lane_type = lane.__class__
+        if lane_type is StraightLane:
+            return self._straight_lane_spatial_bounds(lane)
+        if lane_type is CircularLane:
+            return self._circular_lane_spatial_bounds(lane)
+        return None
+
+    def _straight_lane_spatial_bounds(
+        self,
+        lane: StraightLane,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        longitudinal_margin = float(lane.VEHICLE_LENGTH)
+        half_width = 0.5 * float(lane.width)
+        sample_points = np.stack(
+            [
+                lane.position(longitudinal, lateral)
+                for longitudinal in (
+                    -longitudinal_margin,
+                    lane.length + longitudinal_margin,
+                )
+                for lateral in (-half_width, half_width)
+            ],
+            axis=0,
+        ).astype(np.float32, copy=False)
+        return (
+            sample_points.min(axis=0),
+            sample_points.max(axis=0),
+        )
+
+    def _circular_lane_spatial_bounds(
+        self,
+        lane: CircularLane,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        longitudinal_margin = float(lane.VEHICLE_LENGTH)
+        half_width = 0.5 * float(lane.width)
+        inner_radius = max(0.0, float(lane.radius) - half_width)
+        outer_radius = float(lane.radius) + half_width
+        start_angle = lane.start_phase - lane.direction * longitudinal_margin / lane.radius
+        end_angle = lane.end_phase + lane.direction * longitudinal_margin / lane.radius
+        candidate_angles = (
+            start_angle,
+            end_angle,
+            0.0,
+            0.5 * np.pi,
+            np.pi,
+            -0.5 * np.pi,
+        )
+        points = []
+        for angle in candidate_angles:
+            unit = np.array([np.cos(angle), np.sin(angle)], dtype=np.float32)
+            for radius in (inner_radius, outer_radius):
+                point = lane.center + radius * unit
+                longitudinal, lateral = lane.local_coordinates(point)
+                if (
+                    abs(lateral) <= half_width + 1e-6
+                    and -longitudinal_margin - 1e-6
+                    <= longitudinal
+                    <= lane.length + longitudinal_margin + 1e-6
+                ):
+                    points.append(point)
+        if not points:
+            points = [
+                lane.position(-longitudinal_margin, -lane.direction * half_width),
+                lane.position(-longitudinal_margin, lane.direction * half_width),
+                lane.position(
+                    lane.length + longitudinal_margin,
+                    -lane.direction * half_width,
+                ),
+                lane.position(
+                    lane.length + longitudinal_margin,
+                    lane.direction * half_width,
+                ),
+            ]
+        sample_points = np.asarray(points, dtype=np.float32)
+        return (
+            sample_points.min(axis=0),
+            sample_points.max(axis=0),
+        )
+
+    @staticmethod
+    def _aabb_intersects(
+        bounds_min: np.ndarray,
+        bounds_max: np.ndarray,
+        region_min: np.ndarray,
+        region_max: np.ndarray,
+    ) -> bool:
+        return not (
+            bounds_max[0] < region_min[0]
+            or bounds_min[0] > region_max[0]
+            or bounds_max[1] < region_min[1]
+            or bounds_min[1] > region_max[1]
+        )
+
+    @staticmethod
+    def _points_inside_aabb(
+        points: np.ndarray,
+        bounds_min: np.ndarray,
+        bounds_max: np.ndarray,
+    ) -> np.ndarray:
+        return (
+            (points[:, 0] >= bounds_min[0])
+            & (points[:, 0] <= bounds_max[0])
+            & (points[:, 1] >= bounds_min[1])
+            & (points[:, 1] <= bounds_max[1])
+        )
+
     def _lane_on_points_mask(
         self,
         lane: AbstractLane,
         world_points: np.ndarray,
+        lane_bounds: tuple[np.ndarray, np.ndarray] | None = None,
     ) -> np.ndarray:
+        candidate_points = world_points
+        coarse_mask = None
+        if lane_bounds is not None:
+            coarse_mask = self._points_inside_aabb(
+                world_points,
+                lane_bounds[0],
+                lane_bounds[1],
+            )
+            if not np.any(coarse_mask):
+                return np.zeros(world_points.shape[0], dtype=bool)
+            candidate_points = world_points[coarse_mask]
+
         lane_type = lane.__class__
         if lane_type is StraightLane:
-            delta = world_points - lane.start
+            delta = candidate_points - lane.start
             longitudinal = delta @ lane.direction
             lateral = delta @ lane.direction_lateral
-            return (
+            lane_mask = (
                 (np.abs(lateral) <= 0.5 * lane.width)
                 & (-lane.VEHICLE_LENGTH <= longitudinal)
                 & (longitudinal < lane.length + lane.VEHICLE_LENGTH)
             )
-
-        if lane_type is CircularLane:
-            delta = world_points - lane.center
+        elif lane_type is CircularLane:
+            delta = candidate_points - lane.center
             phi = np.arctan2(delta[:, 1], delta[:, 0])
             phi = lane.start_phase + utils.wrap_to_pi(phi - lane.start_phase)
             radius = np.linalg.norm(delta, axis=1)
             longitudinal = lane.direction * (phi - lane.start_phase) * lane.radius
             lateral = lane.direction * (lane.radius - radius)
-            return (
+            lane_mask = (
                 (np.abs(lateral) <= 0.5 * lane.width)
                 & (-lane.VEHICLE_LENGTH <= longitudinal)
                 & (longitudinal < lane.length + lane.VEHICLE_LENGTH)
             )
+        else:
+            lane_mask = np.fromiter(
+                (lane.on_lane(point) for point in candidate_points),
+                dtype=bool,
+                count=candidate_points.shape[0],
+            )
 
-        return np.fromiter(
-            (lane.on_lane(point) for point in world_points),
-            dtype=bool,
-            count=world_points.shape[0],
-        )
+        if coarse_mask is None:
+            return lane_mask
+        full_mask = np.zeros(world_points.shape[0], dtype=bool)
+        full_mask[coarse_mask] = lane_mask
+        return full_mask
 
     def _road_mask_for_local_points(self, local_points: np.ndarray) -> np.ndarray:
         world_points = self._grid_local_points_to_world(local_points.reshape(-1, 2))
+        world_min = world_points.min(axis=0)
+        world_max = world_points.max(axis=0)
+        lanes, lane_spatial_bounds = self._ensure_lane_spatial_cache()
         on_road = np.zeros(world_points.shape[0], dtype=bool)
-        for lane in self.env.road.network.lanes_list():
-            on_road |= self._lane_on_points_mask(lane, world_points)
+        for lane in lanes:
+            lane_bounds = lane_spatial_bounds.get(id(lane))
+            if lane_bounds is not None and not self._aabb_intersects(
+                lane_bounds[0],
+                lane_bounds[1],
+                world_min,
+                world_max,
+            ):
+                continue
+            on_road |= self._lane_on_points_mask(
+                lane,
+                world_points,
+                lane_bounds=lane_bounds,
+            )
             if on_road.all():
                 break
         return on_road.reshape(local_points.shape[:-1])
+
+    def _vehicle_cell_coverage_patch(
+        self,
+        center_x: float,
+        center_y: float,
+        heading: float,
+        length: float,
+        width: float,
+    ) -> tuple[int, int, np.ndarray] | None:
+        if not self.vehicle_footprint:
+            i, j = self._coords_to_index(center_x, center_y)
+            if 0 <= i < self.grid.shape[-2] and 0 <= j < self.grid.shape[-1]:
+                return i, j, np.ones((1, 1), dtype=np.float32)
+            return None
+
+        cos_h, sin_h = np.cos(heading), np.sin(heading)
+        half_l, half_w = 0.5 * length, 0.5 * width
+        extent_x = abs(cos_h) * half_l + abs(sin_h) * half_w
+        extent_y = abs(sin_h) * half_l + abs(cos_h) * half_w
+
+        i_min, j_min = self._coords_to_index(center_x - extent_x, center_y - extent_y)
+        i_max, j_max = self._coords_to_index(center_x + extent_x, center_y + extent_y)
+        i_min = max(0, i_min)
+        j_min = max(0, j_min)
+        i_max = min(self.grid.shape[-2] - 1, i_max)
+        j_max = min(self.grid.shape[-1] - 1, j_max)
+        if i_min > i_max or j_min > j_max:
+            return None
+
+        cell_x = (
+            np.arange(i_min, i_max + 1, dtype=np.float32) * self.grid_step[0]
+            + self.grid_size[0, 0]
+        )
+        cell_y = (
+            np.arange(j_min, j_max + 1, dtype=np.float32) * self.grid_step[1]
+            + self.grid_size[1, 0]
+        )
+        sample_x = cell_x[:, None, None, None] + self._presence_sample_x[None, None, :, None]
+        sample_y = cell_y[None, :, None, None] + self._presence_sample_y[None, None, None, :]
+
+        dx = sample_x - center_x
+        dy = sample_y - center_y
+        local_long = cos_h * dx + sin_h * dy
+        local_lat = -sin_h * dx + cos_h * dy
+        inside = (np.abs(local_long) <= half_l) & (np.abs(local_lat) <= half_w)
+        coverage = inside.mean(axis=(2, 3), dtype=np.float32)
+        return i_min, j_min, coverage.astype(np.float32, copy=False)
 
     def observe(self) -> np.ndarray:
         if not self.env.road:
@@ -703,27 +917,35 @@ class DetailedOccupancyGridObservation(OccupancyGridObservation):
                 if self.align_to_vehicle_axes
                 else vehicle.heading
             )
-            cell_coverages = self._vehicle_cell_coverages(
+            coverage_patch = self._vehicle_cell_coverage_patch(
                 center_x=float(center[0]),
                 center_y=float(center[1]),
                 heading=heading,
                 length=vehicle.LENGTH * self.footprint_margin,
                 width=vehicle.WIDTH * self.footprint_margin,
             )
+            if coverage_patch is None:
+                continue
+            i_min, j_min, coverage = coverage_patch
+            active_mask = coverage > 0.0
+            if not np.any(active_mask):
+                continue
+            i_max = i_min + coverage.shape[0]
+            j_max = j_min + coverage.shape[1]
             values = self._feature_values(
                 vehicle=vehicle,
                 rel=rel,
                 heading=heading,
                 is_ego=vehicle is self.observer_vehicle,
             )
-            for (i, j), coverage in cell_coverages.items():
-                for layer, feature in enumerate(self.features):
-                    if feature in {"on_road", "on_lane"}:
-                        continue
-                    if feature == "presence":
-                        self.grid[layer, i, j] = max(self.grid[layer, i, j], coverage)
-                    else:
-                        self.grid[layer, i, j] = values.get(feature, 0.0)
+            for layer, feature in enumerate(self.features):
+                if feature in {"on_road", "on_lane"}:
+                    continue
+                target = self.grid[layer, i_min:i_max, j_min:j_max]
+                if feature == "presence":
+                    np.maximum(target, coverage, out=target)
+                else:
+                    target[active_mask] = values.get(feature, 0.0)
 
         obs = self.grid
         if self.clip:

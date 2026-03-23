@@ -723,8 +723,8 @@ def parse_args() -> argparse.Namespace:
         help="Used only when --model-path is not provided.",
     )
     parser.add_argument("--model-path", default=None, help="Optional model checkpoint (.pth).")
-    parser.add_argument("--n-simulations", type=int, default=5)
-    parser.add_argument("--c-puct", type=float, default=2.5)
+    parser.add_argument("--n-simulations", type=int, default=100)
+    parser.add_argument("--c-puct", type=float, default=1.0)
     parser.add_argument("--temperature", type=float, default=None)
     parser.add_argument("--temperature-drop-step", type=int, default=None)
     parser.add_argument("--dirichlet-alpha", type=float, default=None)
