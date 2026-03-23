@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import os
+import time
 from typing import TypeVar
 
 import gymnasium as gym
@@ -70,6 +71,8 @@ class AbstractEnv(gym.Env):
         assert render_mode is None or render_mode in self.metadata["render_modes"]
         self.render_mode = render_mode
         self.enable_auto_render = False
+        self._last_simulation_profile = self._empty_simulation_profile()
+        self._last_step_profile = self._empty_step_profile()
 
         self.reset()
 
@@ -128,6 +131,36 @@ class AbstractEnv(gym.Env):
         self.action_type = action_factory(self, self.config["action"])
         self.observation_space = self.observation_type.space()
         self.action_space = self.action_type.space()
+
+    @staticmethod
+    def _empty_simulation_profile() -> dict:
+        return {
+            "frames": 0,
+            "frame_time_s": 0.0,
+            "simulation_time_s": 0.0,
+            "action_act_calls": 0,
+            "action_act_time_s": 0.0,
+            "road_act_time_s": 0.0,
+            "road_step_time_s": 0.0,
+            "automatic_render_time_s": 0.0,
+        }
+
+    @classmethod
+    def _empty_step_profile(cls) -> dict:
+        return {
+            "step_time_s": 0.0,
+            "simulate_time_s": 0.0,
+            "observe_time_s": 0.0,
+            "reward_time_s": 0.0,
+            "terminated_time_s": 0.0,
+            "truncated_time_s": 0.0,
+            "info_time_s": 0.0,
+            "render_time_s": 0.0,
+            "simulation": cls._empty_simulation_profile(),
+        }
+
+    def get_last_step_profile(self) -> dict:
+        return copy.deepcopy(self._last_step_profile)
 
     def _reward(self, action: Action) -> float:
         """
@@ -205,6 +238,8 @@ class AbstractEnv(gym.Env):
         self.define_spaces()  # First, to set the controlled vehicle class depending on action space
         self.time = self.steps = 0
         self.done = False
+        self._last_simulation_profile = self._empty_simulation_profile()
+        self._last_step_profile = self._empty_step_profile()
         self._reset()
         self.define_spaces()  # Second, to link the obs and actions to the vehicles once the scene is created
         obs = self.observation_type.observe()
@@ -236,25 +271,49 @@ class AbstractEnv(gym.Env):
                 "The road and vehicle must be initialized in the environment implementation"
             )
 
+        step_started_at = time.perf_counter()
+        step_profile = self._empty_step_profile()
         self.time += 1 / self.config["policy_frequency"]
+        simulate_started_at = time.perf_counter()
         self._simulate(action)
+        step_profile["simulate_time_s"] = time.perf_counter() - simulate_started_at
+        step_profile["simulation"] = copy.deepcopy(self._last_simulation_profile)
 
+        observe_started_at = time.perf_counter()
         obs = self.observation_type.observe()
+        step_profile["observe_time_s"] = time.perf_counter() - observe_started_at
+        reward_started_at = time.perf_counter()
         reward = self._reward(action)
+        step_profile["reward_time_s"] = time.perf_counter() - reward_started_at
+        terminated_started_at = time.perf_counter()
         terminated = self._is_terminated()
+        step_profile["terminated_time_s"] = time.perf_counter() - terminated_started_at
+        truncated_started_at = time.perf_counter()
         truncated = self._is_truncated()
+        step_profile["truncated_time_s"] = time.perf_counter() - truncated_started_at
+        info_started_at = time.perf_counter()
         info = self._info(obs, action)
+        step_profile["info_time_s"] = time.perf_counter() - info_started_at
         if self.render_mode == "human":
+            render_started_at = time.perf_counter()
             self.render()
+            step_profile["render_time_s"] = time.perf_counter() - render_started_at
+
+        step_profile["step_time_s"] = time.perf_counter() - step_started_at
+        self._last_step_profile = step_profile
 
         return obs, reward, terminated, truncated, info
 
     def _simulate(self, action: Action | None = None) -> None:
         """Perform several steps of simulation with constant action."""
+        simulation_started_at = time.perf_counter()
+        simulation_profile = self._empty_simulation_profile()
         frames = int(
             self.config["simulation_frequency"] // self.config["policy_frequency"]
         )
+        simulation_profile["frames"] = frames
         for frame in range(frames):
+            frame_started_at = time.perf_counter()
             # Forward action to the vehicle
             if (
                 action is not None
@@ -266,10 +325,23 @@ class AbstractEnv(gym.Env):
                 )
                 == 0
             ):
+                action_act_started_at = time.perf_counter()
                 self.action_type.act(action)
+                simulation_profile["action_act_calls"] += 1
+                simulation_profile["action_act_time_s"] += (
+                    time.perf_counter() - action_act_started_at
+                )
 
+            road_act_started_at = time.perf_counter()
             self.road.act()
+            simulation_profile["road_act_time_s"] += (
+                time.perf_counter() - road_act_started_at
+            )
+            road_step_started_at = time.perf_counter()
             self.road.step(1 / self.config["simulation_frequency"])
+            simulation_profile["road_step_time_s"] += (
+                time.perf_counter() - road_step_started_at
+            )
             self.steps += 1
 
             # Automatically render intermediate simulation steps if a viewer has been launched
@@ -277,9 +349,18 @@ class AbstractEnv(gym.Env):
             if (
                 frame < frames - 1
             ):  # Last frame will be rendered through env.render() as usual
+                automatic_render_started_at = time.perf_counter()
                 self._automatic_rendering()
+                simulation_profile["automatic_render_time_s"] += (
+                    time.perf_counter() - automatic_render_started_at
+                )
+            simulation_profile["frame_time_s"] += time.perf_counter() - frame_started_at
 
         self.enable_auto_render = False
+        simulation_profile["simulation_time_s"] = (
+            time.perf_counter() - simulation_started_at
+        )
+        self._last_simulation_profile = simulation_profile
 
     def render(self) -> np.ndarray | None:
         """

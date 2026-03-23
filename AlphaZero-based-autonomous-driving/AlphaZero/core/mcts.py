@@ -31,6 +31,96 @@ def _record_counter(stats: dict | None, key: str, increment: int = 1) -> None:
         stats[key] = int(stats.get(key, 0)) + int(increment)
 
 
+def _accumulate_env_step_profile(timing_stats: dict | None, env) -> None:
+    if timing_stats is None:
+        return
+
+    env_unwrapped = getattr(env, "unwrapped", env)
+    get_profile = getattr(env_unwrapped, "get_last_step_profile", None)
+    if callable(get_profile):
+        step_profile = get_profile() or {}
+    else:
+        step_profile = getattr(env_unwrapped, "_last_step_profile", None) or {}
+    if not step_profile:
+        return
+
+    simulation_profile = step_profile.get("simulation") or {}
+    _record_counter(timing_stats, "env_step_profile_count")
+    _record_timing(
+        timing_stats, "env_step_time_s", float(step_profile.get("step_time_s", 0.0))
+    )
+    _record_timing(
+        timing_stats,
+        "env_step_simulate_time_s",
+        float(step_profile.get("simulate_time_s", 0.0)),
+    )
+    _record_timing(
+        timing_stats,
+        "env_step_observe_time_s",
+        float(step_profile.get("observe_time_s", 0.0)),
+    )
+    _record_timing(
+        timing_stats,
+        "env_step_reward_time_s",
+        float(step_profile.get("reward_time_s", 0.0)),
+    )
+    _record_timing(
+        timing_stats,
+        "env_step_terminated_time_s",
+        float(step_profile.get("terminated_time_s", 0.0)),
+    )
+    _record_timing(
+        timing_stats,
+        "env_step_truncated_time_s",
+        float(step_profile.get("truncated_time_s", 0.0)),
+    )
+    _record_timing(
+        timing_stats,
+        "env_step_info_time_s",
+        float(step_profile.get("info_time_s", 0.0)),
+    )
+    _record_timing(
+        timing_stats,
+        "env_step_render_time_s",
+        float(step_profile.get("render_time_s", 0.0)),
+    )
+    _record_counter(
+        timing_stats,
+        "env_simulation_frames_total",
+        int(simulation_profile.get("frames", 0)),
+    )
+    _record_counter(
+        timing_stats,
+        "env_action_act_calls",
+        int(simulation_profile.get("action_act_calls", 0)),
+    )
+    _record_timing(
+        timing_stats,
+        "env_frame_time_s",
+        float(simulation_profile.get("frame_time_s", 0.0)),
+    )
+    _record_timing(
+        timing_stats,
+        "env_action_act_time_s",
+        float(simulation_profile.get("action_act_time_s", 0.0)),
+    )
+    _record_timing(
+        timing_stats,
+        "env_road_act_time_s",
+        float(simulation_profile.get("road_act_time_s", 0.0)),
+    )
+    _record_timing(
+        timing_stats,
+        "env_road_step_time_s",
+        float(simulation_profile.get("road_step_time_s", 0.0)),
+    )
+    _record_timing(
+        timing_stats,
+        "env_auto_render_time_s",
+        float(simulation_profile.get("automatic_render_time_s", 0.0)),
+    )
+
+
 def _resolve_mcts_device(device=None, use_cuda=False) -> torch.device:
     if device is not None:
         resolved_device = torch.device(device)
@@ -184,6 +274,7 @@ class MCTSNode:
                 "expand_env_step_time_s",
                 time.perf_counter() - env_step_started_at,
             )
+            _accumulate_env_step_profile(timing_stats, next_env)
             child_init_started_at = time.perf_counter()
             self.children[action] = MCTSNode(
                 next_env,
@@ -266,6 +357,22 @@ class MCTS:
             "expand_deepcopy_time_s": 0.0,
             "expand_env_step_time_s": 0.0,
             "expand_node_init_time_s": 0.0,
+            "env_step_profile_count": 0,
+            "env_step_time_s": 0.0,
+            "env_step_simulate_time_s": 0.0,
+            "env_step_observe_time_s": 0.0,
+            "env_step_reward_time_s": 0.0,
+            "env_step_terminated_time_s": 0.0,
+            "env_step_truncated_time_s": 0.0,
+            "env_step_info_time_s": 0.0,
+            "env_step_render_time_s": 0.0,
+            "env_simulation_frames_total": 0,
+            "env_frame_time_s": 0.0,
+            "env_action_act_calls": 0,
+            "env_action_act_time_s": 0.0,
+            "env_road_act_time_s": 0.0,
+            "env_road_step_time_s": 0.0,
+            "env_auto_render_time_s": 0.0,
             "backprop_time_s": 0.0,
             "terminal_backprop_time_s": 0.0,
             "selection_depth_total": 0,
@@ -277,8 +384,14 @@ class MCTS:
         terminal_rollouts = int(self._timing_stats["terminal_rollouts"])
         inference_calls = int(self._timing_stats["inference_calls"])
         expanded_children = int(self._timing_stats["expanded_children"])
+        env_step_profile_count = int(self._timing_stats["env_step_profile_count"])
+        env_simulation_frames_total = int(
+            self._timing_stats["env_simulation_frames_total"]
+        )
         rollout_time_s = float(self._timing_stats["rollout_time_s"])
         inference_time_s = float(self._timing_stats["inference_time_s"])
+        env_step_time_s = float(self._timing_stats["env_step_time_s"])
+        env_frame_time_s = float(self._timing_stats["env_frame_time_s"])
         avg_rollout_ms = 0.0 if rollouts == 0 else 1000.0 * rollout_time_s / rollouts
         avg_inference_ms = (
             0.0 if inference_calls == 0 else 1000.0 * inference_time_s / inference_calls
@@ -305,6 +418,32 @@ class MCTS:
             "expand_deepcopy_time_s": float(self._timing_stats["expand_deepcopy_time_s"]),
             "expand_env_step_time_s": float(self._timing_stats["expand_env_step_time_s"]),
             "expand_node_init_time_s": float(self._timing_stats["expand_node_init_time_s"]),
+            "env_step_profile_count": env_step_profile_count,
+            "env_step_time_s": env_step_time_s,
+            "env_step_simulate_time_s": float(
+                self._timing_stats["env_step_simulate_time_s"]
+            ),
+            "env_step_observe_time_s": float(
+                self._timing_stats["env_step_observe_time_s"]
+            ),
+            "env_step_reward_time_s": float(self._timing_stats["env_step_reward_time_s"]),
+            "env_step_terminated_time_s": float(
+                self._timing_stats["env_step_terminated_time_s"]
+            ),
+            "env_step_truncated_time_s": float(
+                self._timing_stats["env_step_truncated_time_s"]
+            ),
+            "env_step_info_time_s": float(self._timing_stats["env_step_info_time_s"]),
+            "env_step_render_time_s": float(
+                self._timing_stats["env_step_render_time_s"]
+            ),
+            "env_simulation_frames_total": env_simulation_frames_total,
+            "env_frame_time_s": env_frame_time_s,
+            "env_action_act_calls": int(self._timing_stats["env_action_act_calls"]),
+            "env_action_act_time_s": float(self._timing_stats["env_action_act_time_s"]),
+            "env_road_act_time_s": float(self._timing_stats["env_road_act_time_s"]),
+            "env_road_step_time_s": float(self._timing_stats["env_road_step_time_s"]),
+            "env_auto_render_time_s": float(self._timing_stats["env_auto_render_time_s"]),
             "backprop_time_s": float(self._timing_stats["backprop_time_s"]),
             "terminal_backprop_time_s": float(self._timing_stats["terminal_backprop_time_s"]),
             "selection_depth_total": int(self._timing_stats["selection_depth_total"]),
@@ -312,6 +451,12 @@ class MCTS:
             "avg_rollout_ms": avg_rollout_ms,
             "avg_inference_ms": avg_inference_ms,
             "rollouts_per_sec": rollouts_per_sec,
+            "avg_env_step_ms": 0.0
+            if env_step_profile_count == 0
+            else 1000.0 * env_step_time_s / env_step_profile_count,
+            "avg_env_frame_ms": 0.0
+            if env_simulation_frames_total == 0
+            else 1000.0 * env_frame_time_s / env_simulation_frames_total,
             "avg_expanded_children": 0.0 if rollouts == 0 else expanded_children / rollouts,
             "avg_leaf_depth": 0.0
             if rollouts == 0

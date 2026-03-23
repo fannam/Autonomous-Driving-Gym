@@ -129,6 +129,22 @@ def _init_search_stats_accumulator() -> dict:
         "expand_deepcopy_time_s": 0.0,
         "expand_env_step_time_s": 0.0,
         "expand_node_init_time_s": 0.0,
+        "env_step_profile_count": 0,
+        "env_step_time_s": 0.0,
+        "env_step_simulate_time_s": 0.0,
+        "env_step_observe_time_s": 0.0,
+        "env_step_reward_time_s": 0.0,
+        "env_step_terminated_time_s": 0.0,
+        "env_step_truncated_time_s": 0.0,
+        "env_step_info_time_s": 0.0,
+        "env_step_render_time_s": 0.0,
+        "env_simulation_frames_total": 0,
+        "env_frame_time_s": 0.0,
+        "env_action_act_calls": 0,
+        "env_action_act_time_s": 0.0,
+        "env_road_act_time_s": 0.0,
+        "env_road_step_time_s": 0.0,
+        "env_auto_render_time_s": 0.0,
         "expanded_children": 0,
         "backprop_time_s": 0.0,
         "terminal_backprop_time_s": 0.0,
@@ -161,17 +177,87 @@ def _accumulate_search_stats(accumulator: dict, search_stats: dict | None) -> No
         "expand_deepcopy_time_s",
         "expand_env_step_time_s",
         "expand_node_init_time_s",
+        "env_step_time_s",
+        "env_step_simulate_time_s",
+        "env_step_observe_time_s",
+        "env_step_reward_time_s",
+        "env_step_terminated_time_s",
+        "env_step_truncated_time_s",
+        "env_step_info_time_s",
+        "env_step_render_time_s",
+        "env_frame_time_s",
+        "env_action_act_time_s",
+        "env_road_act_time_s",
+        "env_road_step_time_s",
+        "env_auto_render_time_s",
         "backprop_time_s",
         "terminal_backprop_time_s",
         "selection_depth_total",
     ):
         accumulator[key] += float(search_stats.get(key, 0.0))
-    for key in ("rollouts", "inference_calls", "expanded_children"):
+    for key in (
+        "rollouts",
+        "inference_calls",
+        "expanded_children",
+        "env_step_profile_count",
+        "env_simulation_frames_total",
+        "env_action_act_calls",
+    ):
         accumulator[key] += int(search_stats.get(key, 0))
     accumulator["max_leaf_depth"] = max(
         float(accumulator["max_leaf_depth"]),
         float(search_stats.get("max_leaf_depth", 0.0)),
     )
+
+
+def _format_env_breakdown(search_stats: dict | None) -> str:
+    if not search_stats:
+        return "children=0 env=0.00s"
+
+    expanded_children = int(search_stats.get("expanded_children", 0))
+    env_step_profiles = int(search_stats.get("env_step_profile_count", 0))
+    env_time_s = float(
+        search_stats.get(
+            "env_step_time_s",
+            search_stats.get("expand_env_step_time_s", 0.0),
+        )
+    )
+    env_simulate_time_s = float(search_stats.get("env_step_simulate_time_s", 0.0))
+    env_observe_time_s = float(search_stats.get("env_step_observe_time_s", 0.0))
+    env_reward_time_s = float(search_stats.get("env_step_reward_time_s", 0.0))
+    env_terminated_time_s = float(search_stats.get("env_step_terminated_time_s", 0.0))
+    env_truncated_time_s = float(search_stats.get("env_step_truncated_time_s", 0.0))
+    env_info_time_s = float(search_stats.get("env_step_info_time_s", 0.0))
+    env_render_time_s = float(search_stats.get("env_step_render_time_s", 0.0))
+    env_action_act_time_s = float(search_stats.get("env_action_act_time_s", 0.0))
+    env_road_act_time_s = float(search_stats.get("env_road_act_time_s", 0.0))
+    env_road_step_time_s = float(search_stats.get("env_road_step_time_s", 0.0))
+    frames_total = int(search_stats.get("env_simulation_frames_total", 0))
+
+    env_fragment = f"env={env_time_s:.2f}s"
+    if env_step_profiles > 0:
+        env_fragment += f" ({env_time_s / env_step_profiles:.2f}s/child)"
+
+    parts = [
+        f"children={expanded_children}",
+        env_fragment,
+        f"sim={env_simulate_time_s:.2f}s",
+        f"act={env_action_act_time_s:.2f}s",
+        f"road_act={env_road_act_time_s:.2f}s",
+        f"road_step={env_road_step_time_s:.2f}s",
+        f"observe={env_observe_time_s:.2f}s",
+        f"reward={env_reward_time_s:.2f}s",
+        f"term={env_terminated_time_s:.2f}s",
+        f"trunc={env_truncated_time_s:.2f}s",
+        f"info={env_info_time_s:.2f}s",
+    ]
+    if env_render_time_s > 0.0:
+        parts.append(f"render={env_render_time_s:.2f}s")
+    if frames_total > 0:
+        frame_ms = 1000.0 * float(search_stats.get("env_frame_time_s", 0.0)) / frames_total
+        parts.append(f"frames={frames_total}")
+        parts.append(f"frame={frame_ms:.1f}ms")
+    return " ".join(parts)
 
 
 def _format_step_search_stats(search_stats: dict | None) -> str:
@@ -188,7 +274,7 @@ def _format_step_search_stats(search_stats: dict | None) -> str:
         f"leaf_stack={float(search_stats.get('ensure_stack_time_s', 0.0)):.2f}s "
         f"expand={float(search_stats.get('expand_time_s', 0.0)):.2f}s "
         f"copy={float(search_stats.get('expand_deepcopy_time_s', 0.0)):.2f}s "
-        f"env={float(search_stats.get('expand_env_step_time_s', 0.0)):.2f}s "
+        f"{_format_env_breakdown(search_stats)} "
         f"backprop={float(search_stats.get('backprop_time_s', 0.0)):.2f}s "
         f"depth={avg_leaf_depth:.1f}"
     )
@@ -222,14 +308,68 @@ def _format_episode_search_summary(accumulator: dict) -> str:
     avg_env_s = 0.0 if decisions == 0 else expand_env_step_time_s / decisions
     avg_backprop_s = 0.0 if decisions == 0 else backprop_time_s / decisions
     avg_leaf_depth = 0.0 if rollouts == 0 else selection_depth_total / rollouts
+    expanded_children = int(accumulator["expanded_children"])
+    env_step_profiles = int(accumulator["env_step_profile_count"])
+    env_simulation_frames_total = int(accumulator["env_simulation_frames_total"])
+    avg_children = 0.0 if decisions == 0 else expanded_children / decisions
+    avg_profiled_env_s = (
+        0.0 if decisions == 0 else float(accumulator["env_step_time_s"]) / decisions
+    )
+    avg_env_per_child_s = (
+        0.0
+        if env_step_profiles == 0
+        else float(accumulator["env_step_time_s"]) / env_step_profiles
+    )
+    avg_frame_ms = (
+        0.0
+        if env_simulation_frames_total == 0
+        else 1000.0 * float(accumulator["env_frame_time_s"]) / env_simulation_frames_total
+    )
+    avg_sim_s = (
+        0.0 if decisions == 0 else float(accumulator["env_step_simulate_time_s"]) / decisions
+    )
+    avg_action_act_s = (
+        0.0 if decisions == 0 else float(accumulator["env_action_act_time_s"]) / decisions
+    )
+    avg_road_act_s = (
+        0.0 if decisions == 0 else float(accumulator["env_road_act_time_s"]) / decisions
+    )
+    avg_road_step_s = (
+        0.0 if decisions == 0 else float(accumulator["env_road_step_time_s"]) / decisions
+    )
+    avg_observe_s = (
+        0.0 if decisions == 0 else float(accumulator["env_step_observe_time_s"]) / decisions
+    )
+    avg_reward_s = (
+        0.0 if decisions == 0 else float(accumulator["env_step_reward_time_s"]) / decisions
+    )
+    avg_term_s = (
+        0.0
+        if decisions == 0
+        else float(accumulator["env_step_terminated_time_s"]) / decisions
+    )
+    avg_trunc_s = (
+        0.0
+        if decisions == 0
+        else float(accumulator["env_step_truncated_time_s"]) / decisions
+    )
+    avg_info_s = (
+        0.0 if decisions == 0 else float(accumulator["env_step_info_time_s"]) / decisions
+    )
     return (
         f"decisions={decisions} avg_root={avg_root_prepare_s:.2f}s avg_search={avg_search_s:.2f}s "
         f"avg_rollouts={avg_rollouts:.1f} rps={effective_rollouts_per_sec:.2f} "
         f"nn_avg={avg_inference_ms:.1f}ms/state avg_rollout={avg_rollout_ms:.1f}ms "
         f"avg_traverse={avg_traverse_s:.2f}s avg_leaf_stack={avg_leaf_stack_s:.2f}s "
         f"avg_expand={avg_expand_s:.2f}s avg_copy={avg_copy_s:.2f}s avg_env={avg_env_s:.2f}s "
-        f"avg_backprop={avg_backprop_s:.2f}s avg_depth={avg_leaf_depth:.1f} "
-        f"max_depth={int(accumulator['max_leaf_depth'])}"
+        f"avg_children={avg_children:.1f} avg_profiled_env={avg_profiled_env_s:.2f}s "
+        f"env_per_child={avg_env_per_child_s:.2f}s avg_sim={avg_sim_s:.2f}s "
+        f"avg_act={avg_action_act_s:.2f}s avg_road_act={avg_road_act_s:.2f}s "
+        f"avg_road_step={avg_road_step_s:.2f}s avg_observe={avg_observe_s:.2f}s "
+        f"avg_reward={avg_reward_s:.2f}s avg_term={avg_term_s:.2f}s "
+        f"avg_trunc={avg_trunc_s:.2f}s avg_info={avg_info_s:.2f}s "
+        f"frame_avg={avg_frame_ms:.1f}ms avg_backprop={avg_backprop_s:.2f}s "
+        f"avg_depth={avg_leaf_depth:.1f} max_depth={int(accumulator['max_leaf_depth'])}"
     )
 
 
