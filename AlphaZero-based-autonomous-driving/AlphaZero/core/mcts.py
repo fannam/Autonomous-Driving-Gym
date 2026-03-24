@@ -168,7 +168,7 @@ class MCTSNode:
         copy_env=True,
         defer_stack_init=False,
     ):
-        self.env = copy.deepcopy(env) if copy_env else env
+        self.env = copy.deepcopy(env) if (copy_env and env is not None) else env
         self.parent = parent
         self.parent_action = parent_action
         self.stack_config = stack_config or StackConfig()
@@ -176,7 +176,20 @@ class MCTSNode:
         self._n = 0
         self._W = 0
         self._P = prior_prob
+        self.collision = False
+        self.success = False
+        self.terminated = False
+        self.truncated = False
+        self.available_actions = tuple()
+        self.stack_of_planes = None
 
+        if self.env is not None:
+            self._refresh_from_env()
+
+        if not defer_stack_init and self.env is not None:
+            self.ensure_stack_of_planes()
+
+    def _refresh_from_env(self) -> None:
         ego_vehicle = self.env.unwrapped.road.vehicles[0]
         self.collision = bool(getattr(ego_vehicle, "crashed", False))
         success_fn = getattr(self.env.unwrapped, "_is_success", None)
@@ -188,12 +201,46 @@ class MCTSNode:
             if not self.success and not self.truncated and not self.terminated
             else tuple()
         )
-        self.stack_of_planes = None
 
-        if not defer_stack_init:
-            self.ensure_stack_of_planes()
+    def ensure_instantiated(self, timing_stats: dict | None = None) -> None:
+        if self.env is not None:
+            return
+        if self.parent is None:
+            raise RuntimeError("Cannot lazily instantiate a root node without an env.")
+
+        self.parent.ensure_instantiated(timing_stats=timing_stats)
+        deepcopy_started_at = time.perf_counter()
+        next_env = copy.deepcopy(self.parent.env)
+        _record_timing(
+            timing_stats,
+            "expand_deepcopy_time_s",
+            time.perf_counter() - deepcopy_started_at,
+        )
+        env_step_started_at = time.perf_counter()
+        env_unwrapped = getattr(next_env, "unwrapped", next_env)
+        step_for_mcts = getattr(env_unwrapped, "step_for_mcts", None)
+        if callable(step_for_mcts):
+            step_for_mcts(self.parent_action)
+        else:
+            next_env.step(self.parent_action)
+        _record_timing(
+            timing_stats,
+            "expand_env_step_time_s",
+            time.perf_counter() - env_step_started_at,
+        )
+        _accumulate_env_step_profile(timing_stats, next_env)
+        child_init_started_at = time.perf_counter()
+        self.env = next_env
+        self._refresh_from_env()
+        _record_timing(
+            timing_stats,
+            "expand_node_init_time_s",
+            time.perf_counter() - child_init_started_at,
+        )
+        _record_counter(timing_stats, "expanded_children", 1)
 
     def ensure_stack_of_planes(self, timing_stats: dict | None = None):
+        self.ensure_instantiated(timing_stats=timing_stats)
         if self.stack_of_planes is not None:
             return
 
@@ -255,34 +302,12 @@ class MCTSNode:
 
     def expand(self, action_priors, timing_stats: dict | None = None):
         expand_started_at = time.perf_counter()
-        children_created = 0
         for action in self.available_actions:
             prob = action_priors.get(action, 0.0)
             if action in self.children or prob <= 0:
                 continue
-            deepcopy_started_at = time.perf_counter()
-            next_env = copy.deepcopy(self.env)
-            _record_timing(
-                timing_stats,
-                "expand_deepcopy_time_s",
-                time.perf_counter() - deepcopy_started_at,
-            )
-            env_step_started_at = time.perf_counter()
-            env_unwrapped = getattr(next_env, "unwrapped", next_env)
-            step_for_mcts = getattr(env_unwrapped, "step_for_mcts", None)
-            if callable(step_for_mcts):
-                step_for_mcts(action)
-            else:
-                next_env.step(action)
-            _record_timing(
-                timing_stats,
-                "expand_env_step_time_s",
-                time.perf_counter() - env_step_started_at,
-            )
-            _accumulate_env_step_profile(timing_stats, next_env)
-            child_init_started_at = time.perf_counter()
             self.children[action] = MCTSNode(
-                next_env,
+                None,
                 self,
                 action,
                 prob,
@@ -290,18 +315,11 @@ class MCTSNode:
                 copy_env=False,
                 defer_stack_init=True,
             )
-            _record_timing(
-                timing_stats,
-                "expand_node_init_time_s",
-                time.perf_counter() - child_init_started_at,
-            )
-            children_created += 1
         _record_timing(
             timing_stats,
             "expand_time_s",
             time.perf_counter() - expand_started_at,
         )
-        _record_counter(timing_stats, "expanded_children", children_created)
 
     def is_leaf(self):
         return self.children == {}
@@ -591,6 +609,7 @@ class MCTS:
             int(leaf_depth),
         )
         try:
+            leaf_node.ensure_instantiated(timing_stats=self._timing_stats)
             truncated = leaf_node.truncated
             terminated = leaf_node.terminated
             crashed = bool(leaf_node.collision)
@@ -667,6 +686,7 @@ class MCTS:
         if action in self.root.children:
             old_root = self.root
             new_root = old_root.children[action]
+            new_root.ensure_instantiated()
             new_root.parent = None
             old_root.children.clear()
             self.root = new_root
