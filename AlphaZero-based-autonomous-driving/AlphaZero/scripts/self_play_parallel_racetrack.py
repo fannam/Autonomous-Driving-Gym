@@ -408,6 +408,8 @@ def _run_worker(task: dict) -> dict:
         add_root_dirichlet_noise=bool(task["add_root_dirichlet_noise"]),
         root_dirichlet_alpha=float(task["root_dirichlet_alpha"]),
         root_exploration_fraction=float(task["root_exploration_fraction"]),
+        reuse_tree_between_steps=bool(task["reuse_tree_between_steps"]),
+        max_expand_actions=task["max_expand_actions"],
     )
 
     worker_id = int(task["worker_id"])
@@ -775,6 +777,15 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--model-path", default=None, help="Optional model checkpoint (.pth).")
     parser.add_argument("--n-simulations", type=int, default=100)
+    parser.add_argument(
+        "--max-expand-actions",
+        type=int,
+        default=None,
+        help=(
+            "Optional cap on how many actions each leaf expansion keeps, ranked by policy prior. "
+            "Lower values reduce RAM and env-copy churn, but change search behavior."
+        ),
+    )
     parser.add_argument("--c-puct", type=float, default=1.0)
     parser.add_argument("--temperature", type=float, default=None)
     parser.add_argument("--temperature-drop-step", type=int, default=None)
@@ -845,6 +856,14 @@ def parse_args() -> argparse.Namespace:
         "--print-actions",
         action="store_true",
         help="Print per-step actions inside each worker (verbose, mostly for debugging).",
+    )
+    parser.add_argument(
+        "--no-reuse-tree",
+        action="store_true",
+        help=(
+            "Do not reuse the MCTS subtree after applying the selected real-env action. "
+            "This reduces retained RAM between steps, but costs extra compute."
+        ),
     )
     parser.add_argument(
         "--output-dir",
@@ -923,6 +942,7 @@ def main():
             "(distributed across workers)"
         )
     print(f"n_actions={config.n_actions}, n_simulations={args.n_simulations}")
+    print(f"max_expand_actions={args.max_expand_actions}")
     print(f"finish_laps={args.finish_laps}, terminate_on_finish={args.terminate_on_finish}")
     print(f"temperature={temperature}, temperature_drop_step={temperature_drop_step}")
     print(f"dirichlet_alpha={root_dirichlet_alpha}, root_exploration_fraction={root_exploration_fraction}")
@@ -932,6 +952,7 @@ def main():
     print(f"progress_interval={args.progress_interval}")
     print(f"worker_heartbeat_interval={args.worker_heartbeat_interval}")
     print(f"manager_heartbeat_interval={args.manager_heartbeat_interval}")
+    print(f"reuse_tree_between_steps={not args.no_reuse_tree}")
     print(
         "result_timeout="
         + (
@@ -986,6 +1007,8 @@ def main():
             "add_root_dirichlet_noise": True,
             "root_dirichlet_alpha": root_dirichlet_alpha,
             "root_exploration_fraction": root_exploration_fraction,
+            "reuse_tree_between_steps": not args.no_reuse_tree,
+            "max_expand_actions": args.max_expand_actions,
             "torch_threads_per_worker": args.torch_threads_per_worker,
             "print_actions": args.print_actions,
             "max_steps_per_episode": args.max_steps_per_episode,

@@ -327,6 +327,7 @@ class MCTS:
         n_simulations=10,
         root_dirichlet_alpha=0.3,
         root_exploration_fraction=0.25,
+        max_expand_actions=None,
     ):
         self.c_puct = c_puct
         self.root = root
@@ -335,6 +336,11 @@ class MCTS:
         self._n_simulations = n_simulations
         self._root_dirichlet_alpha = float(root_dirichlet_alpha)
         self._root_exploration_fraction = float(root_exploration_fraction)
+        self._max_expand_actions = (
+            None if max_expand_actions is None else int(max_expand_actions)
+        )
+        if self._max_expand_actions is not None and self._max_expand_actions <= 0:
+            raise ValueError("max_expand_actions must be a positive integer or None.")
         self._pending_root_noise = False
         self.reset_timing_stats()
         if self._network.training:
@@ -532,6 +538,28 @@ class MCTS:
             mixed_policy[action] = (1.0 - epsilon) * prior + epsilon * float(noise_prob)
         return softmax_policy(mixed_policy, available_actions)
 
+    def _select_expand_actions(
+        self,
+        available_actions: tuple[int, ...],
+        action_priors: dict[int, float],
+    ) -> tuple[int, ...]:
+        candidate_actions = tuple(
+            action
+            for action in available_actions
+            if float(action_priors.get(action, 0.0)) > 0.0
+        )
+        if (
+            self._max_expand_actions is None
+            or len(candidate_actions) <= self._max_expand_actions
+        ):
+            return candidate_actions
+        ranked_actions = sorted(
+            candidate_actions,
+            key=lambda action: float(action_priors.get(action, 0.0)),
+            reverse=True,
+        )
+        return tuple(ranked_actions[: self._max_expand_actions])
+
     def prepare_root(self, add_exploration_noise=False):
         self._pending_root_noise = bool(add_exploration_noise)
         if not self._pending_root_noise or not self.root.children:
@@ -606,7 +634,16 @@ class MCTS:
                     time.perf_counter() - root_noise_started_at,
                 )
                 self._pending_root_noise = False
-            leaf_node.expand(updated_policy, timing_stats=self._timing_stats)
+            expand_policy = updated_policy
+            if self._max_expand_actions is not None:
+                selected_actions = self._select_expand_actions(
+                    leaf_node.available_actions,
+                    updated_policy,
+                )
+                expand_policy = {
+                    action: updated_policy[action] for action in selected_actions
+                }
+            leaf_node.expand(expand_policy, timing_stats=self._timing_stats)
 
             rollout_value = self._compute_rollout_value(
                 truncated,
@@ -628,8 +665,11 @@ class MCTS:
 
     def move_to_new_root(self, action):
         if action in self.root.children:
-            self.root = self.root.children[action]
-            self.root.parent = None
+            old_root = self.root
+            new_root = old_root.children[action]
+            new_root.parent = None
+            old_root.children.clear()
+            self.root = new_root
             self._pending_root_noise = False
             return
         raise ValueError("Hanh dong khong co trong cay hien tai.")

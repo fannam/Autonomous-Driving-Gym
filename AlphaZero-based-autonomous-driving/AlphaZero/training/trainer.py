@@ -47,6 +47,8 @@ class AlphaZeroTrainer:
         root_dirichlet_alpha=0.3,
         root_exploration_fraction=0.25,
         weight_decay=1e-4,
+        reuse_tree_between_steps=True,
+        max_expand_actions=None,
     ):
         self.device = _resolve_training_device(device)
         self.network = network.to(self.device)
@@ -75,6 +77,12 @@ class AlphaZeroTrainer:
         self.add_root_dirichlet_noise = bool(add_root_dirichlet_noise)
         self.root_dirichlet_alpha = float(root_dirichlet_alpha)
         self.root_exploration_fraction = float(root_exploration_fraction)
+        self.reuse_tree_between_steps = bool(reuse_tree_between_steps)
+        self.max_expand_actions = (
+            None if max_expand_actions is None else int(max_expand_actions)
+        )
+        if self.max_expand_actions is not None and self.max_expand_actions <= 0:
+            raise ValueError("max_expand_actions must be a positive integer or None.")
         self.training_data = []
         self.action_list = []
         self.last_episode_outcome = None
@@ -126,6 +134,7 @@ class AlphaZeroTrainer:
             n_simulations=self.n_simulations,
             root_dirichlet_alpha=self.root_dirichlet_alpha,
             root_exploration_fraction=self.root_exploration_fraction,
+            max_expand_actions=self.max_expand_actions,
         )
 
     def _temperature_for_step(self, step_count):
@@ -302,7 +311,7 @@ class AlphaZeroTrainer:
                     }
                 )
 
-            if action in root_node.children:
+            if self.reuse_tree_between_steps and action in root_node.children:
                 mcts.move_to_new_root(action)
                 root_node = mcts.root
             else:
