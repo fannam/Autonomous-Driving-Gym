@@ -28,6 +28,8 @@ setup(
             "alphazero-self-play=AlphaZero.scripts.self_play:main",
             "alphazero-self-play-racetrack=AlphaZero.scripts.self_play_parallel_racetrack:main",
             "alphazero-train-from-self-play=AlphaZero.scripts.train_from_self_play:main",
+            "alphazero-progressive-self-play=AlphaZero.scripts.progressive_self_play:main",
+            "alphazero-progressive-train=AlphaZero.scripts.progressive_train:main",
             "alphazero-infer=AlphaZero.scripts.infer:main",
             "alphazero-evaluate=AlphaZero.scripts.evaluate:main",
         ],
