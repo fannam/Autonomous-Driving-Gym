@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from collections import OrderedDict
 from itertools import product
 from typing import TYPE_CHECKING
@@ -11,7 +12,7 @@ from gymnasium import spaces
 from highway_env import utils
 from highway_env.envs.common.finite_mdp import compute_ttc_grid
 from highway_env.envs.common.graphics import EnvViewer
-from highway_env.road.lane import AbstractLane, CircularLane, StraightLane
+from highway_env.road.lane import AbstractLane, CircularLane, SineLane, StraightLane
 from highway_env.utils import Vector
 from highway_env.vehicle.kinematics import Vehicle
 
@@ -592,6 +593,40 @@ class DetailedOccupancyGridObservation(OccupancyGridObservation):
         )
         self._lane_cache_key: tuple[int, ...] | None = None
         self._lane_spatial_bounds: dict[int, tuple[np.ndarray, np.ndarray] | None] = {}
+        self._lane_boundary_cache_key: tuple[tuple[int, ...], float] | None = None
+        self._lane_boundary_samples: tuple[
+            tuple[AbstractLane, np.ndarray, np.ndarray], ...
+        ] = ()
+
+    def __deepcopy__(self, memo):
+        cls = self.__class__
+        clone = cls.__new__(cls)
+        memo[id(self)] = clone
+
+        shared_attrs = {
+            "_presence_sample_x",
+            "_presence_sample_y",
+            "_cell_center_local_points",
+            "_soft_local_points",
+        }
+        reset_attrs = {
+            "_lane_cache_key": None,
+            "_lane_spatial_bounds": {},
+            "_lane_boundary_cache_key": None,
+            "_lane_boundary_samples": (),
+        }
+
+        for name, value in self.__dict__.items():
+            if name in shared_attrs:
+                setattr(clone, name, value)
+            elif name == "grid":
+                setattr(clone, name, value.copy())
+            elif name in reset_attrs:
+                setattr(clone, name, reset_attrs[name])
+            else:
+                setattr(clone, name, copy.deepcopy(value, memo))
+
+        return clone
 
     def _build_local_point_grid(self, subsamples: int) -> np.ndarray:
         width = self.grid.shape[-2]
@@ -644,6 +679,115 @@ class DetailedOccupancyGridObservation(OccupancyGridObservation):
             }
             self._lane_cache_key = lane_cache_key
         return lanes, self._lane_spatial_bounds
+
+    def _lane_boundary_waypoints(
+        self,
+        lane: AbstractLane,
+        spacing: float,
+    ) -> np.ndarray:
+        waypoints = np.arange(0.0, lane.length, spacing, dtype=np.float32)
+        if waypoints.size == 0 or waypoints[-1] < lane.length:
+            waypoints = np.concatenate(
+                [waypoints, np.array([lane.length], dtype=np.float32)]
+            )
+        return waypoints
+
+    def _lane_boundary_world_points_for(
+        self,
+        lane: AbstractLane,
+        waypoints: np.ndarray,
+    ) -> np.ndarray:
+        lane_type = lane.__class__
+        if lane_type is StraightLane:
+            half_width = 0.5 * float(lane.width)
+            longitudinal = waypoints[:, None]
+            direction = np.asarray(lane.direction, dtype=np.float32)[None, :]
+            direction_lateral = np.asarray(
+                lane.direction_lateral,
+                dtype=np.float32,
+            )[None, :]
+            centerline = (
+                np.asarray(lane.start, dtype=np.float32)[None, :]
+                + longitudinal * direction
+            )
+            return np.stack(
+                (
+                    centerline - half_width * direction_lateral,
+                    centerline + half_width * direction_lateral,
+                ),
+                axis=1,
+            ).astype(np.float32, copy=False)
+
+        if lane_type is SineLane:
+            half_width = 0.5 * float(lane.width)
+            direction = np.asarray(lane.direction, dtype=np.float32)[None, :]
+            direction_lateral = np.asarray(
+                lane.direction_lateral,
+                dtype=np.float32,
+            )[None, :]
+            lateral_offset = (
+                float(lane.amplitude)
+                * np.sin(float(lane.pulsation) * waypoints + float(lane.phase))
+            )[:, None]
+            centerline = (
+                np.asarray(lane.start, dtype=np.float32)[None, :]
+                + waypoints[:, None] * direction
+                + lateral_offset * direction_lateral
+            )
+            return np.stack(
+                (
+                    centerline - half_width * direction_lateral,
+                    centerline + half_width * direction_lateral,
+                ),
+                axis=1,
+            ).astype(np.float32, copy=False)
+
+        if lane_type is CircularLane:
+            half_width = 0.5 * float(lane.width)
+            phi = (
+                float(lane.direction) * waypoints / float(lane.radius)
+                + float(lane.start_phase)
+            )
+            unit = np.stack((np.cos(phi), np.sin(phi)), axis=1).astype(
+                np.float32,
+                copy=False,
+            )
+            center = np.asarray(lane.center, dtype=np.float32)[None, :]
+            outer_radius = float(lane.radius) + half_width * float(lane.direction)
+            inner_radius = float(lane.radius) - half_width * float(lane.direction)
+            return np.stack(
+                (
+                    center + outer_radius * unit,
+                    center + inner_radius * unit,
+                ),
+                axis=1,
+            ).astype(np.float32, copy=False)
+
+        points = np.empty((waypoints.shape[0], 2, 2), dtype=np.float32)
+        for index, waypoint in enumerate(waypoints):
+            half_width = 0.5 * float(lane.width_at(float(waypoint)))
+            points[index, 0] = lane.position(float(waypoint), -half_width)
+            points[index, 1] = lane.position(float(waypoint), half_width)
+        return points
+
+    def _ensure_lane_boundary_cache(
+        self,
+    ) -> tuple[tuple[AbstractLane, np.ndarray, np.ndarray], ...]:
+        lanes = tuple(self.env.road.network.lanes_list())
+        spacing = float(np.amin(self.grid_step))
+        cache_key = (tuple(id(lane) for lane in lanes), spacing)
+        if cache_key != self._lane_boundary_cache_key:
+            self._lane_boundary_samples = tuple(
+                (
+                    lane,
+                    waypoints,
+                    self._lane_boundary_world_points_for(lane, waypoints),
+                )
+                for lane in lanes
+                if (waypoints := self._lane_boundary_waypoints(lane, spacing)).size > 0
+            )
+            self._lane_boundary_cache_key = cache_key
+        return self._lane_boundary_samples
 
     def _lane_spatial_bounds_for(
         self,
@@ -962,27 +1106,46 @@ class DetailedOccupancyGridObservation(OccupancyGridObservation):
 
         A value of 1 indicates that the grid cell belongs to a lane boundary sample.
         """
-        lane_waypoints_spacing = np.amin(self.grid_step)
-        road = self.env.road
+        observer = self.observer_vehicle
+        observer_position = np.asarray(observer.position, dtype=np.float32)
+        if self.align_to_vehicle_axes:
+            c, s = np.cos(observer.heading), np.sin(observer.heading)
+            rotation_t = np.array([[c, -s], [s, c]], dtype=np.float32)
+        else:
+            rotation_t = None
 
-        for _from in road.network.graph.keys():
-            for _to in road.network.graph[_from].keys():
-                for lane in road.network.graph[_from][_to]:
-                    origin, _ = lane.local_coordinates(self.observer_vehicle.position)
-                    waypoints = np.arange(
-                        origin - lane_perception_distance,
-                        origin + lane_perception_distance,
-                        lane_waypoints_spacing,
-                    ).clip(0, lane.length)
-                    for waypoint in waypoints:
-                        half_width = 0.5 * lane.width_at(waypoint)
-                        for lateral in (-half_width, half_width):
-                            cell = self.pos_to_index(lane.position(waypoint, lateral))
-                            if (
-                                0 <= cell[0] < self.grid.shape[-2]
-                                and 0 <= cell[1] < self.grid.shape[-1]
-                            ):
-                                self.grid[layer_index, cell[0], cell[1]] = 1.0
+        grid_x_min, grid_x_max = self.grid_size[0]
+        grid_y_min, grid_y_max = self.grid_size[1]
+        step_x, step_y = float(self.grid_step[0]), float(self.grid_step[1])
+
+        for lane, waypoints, boundary_points in self._ensure_lane_boundary_cache():
+            origin, _ = lane.local_coordinates(observer_position)
+            waypoint_mask = (
+                (waypoints >= origin - lane_perception_distance)
+                & (waypoints <= origin + lane_perception_distance)
+            )
+            if not np.any(waypoint_mask):
+                continue
+
+            local_points = (
+                boundary_points[waypoint_mask].reshape(-1, 2) - observer_position
+            )
+            if rotation_t is not None:
+                local_points = local_points @ rotation_t
+
+            valid_mask = (
+                (local_points[:, 0] >= grid_x_min)
+                & (local_points[:, 0] < grid_x_max)
+                & (local_points[:, 1] >= grid_y_min)
+                & (local_points[:, 1] < grid_y_max)
+            )
+            if not np.any(valid_mask):
+                continue
+
+            valid_points = local_points[valid_mask]
+            cell_x = np.floor((valid_points[:, 0] - grid_x_min) / step_x).astype(np.intp)
+            cell_y = np.floor((valid_points[:, 1] - grid_y_min) / step_y).astype(np.intp)
+            self.grid[layer_index, cell_x, cell_y] = 1.0
 
     def fill_road_layer_by_cell_soft(self, layer_index: int) -> None:
         """
