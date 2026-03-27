@@ -26,7 +26,7 @@ def run_inference(model_path=None, seed=28, config=None, device="auto"):
     if model_path is None:
         model_path = config.model_path
 
-    env = init_env(seed=seed)
+    env = init_env(seed=seed, stage="inference")
     network = AlphaZeroNetwork(
         input_shape=config.input_shape,
         n_residual_layers=config.n_residual_layers,

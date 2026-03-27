@@ -47,6 +47,12 @@ class HighwayEnv(AbstractEnv):
                 "reward_speed_range": [20, 30],
                 "normalize_reward": True,
                 "offroad_terminal": False,
+                "success_mode": None,
+                "terminate_on_success": False,
+                "success_max_steps": None,
+                "success_min_distance": None,
+                "success_speed_range_fraction": 0.75,
+                "success_speed_max_fraction": 0.8,
             }
         )
         return config
@@ -54,6 +60,7 @@ class HighwayEnv(AbstractEnv):
     def _reset(self) -> None:
         self._create_road()
         self._create_vehicles()
+        self._reset_success_state()
 
     def _create_road(self) -> None:
         """Create a road composed of straight adjacent lanes."""
@@ -92,6 +99,79 @@ class HighwayEnv(AbstractEnv):
                 )
                 vehicle.randomize_behavior()
                 self.road.vehicles.append(vehicle)
+
+    def _success_mode(self) -> str | None:
+        raw_mode = self.config.get("success_mode")
+        if raw_mode in (None, False, "", "none"):
+            return None
+        mode = str(raw_mode)
+        if mode != "distance":
+            raise ValueError(
+                f"Unsupported success_mode={mode!r}. Only 'distance' is supported."
+            )
+        return mode
+
+    def _get_success_speed_bounds(self) -> tuple[float, float]:
+        action_config = self.config.get("action", {})
+        target_speeds = action_config.get("target_speeds")
+        if target_speeds is None:
+            target_speeds = getattr(self.vehicle, "target_speeds", None)
+        if target_speeds is not None:
+            speeds = np.asarray(target_speeds, dtype=np.float32).reshape(-1)
+            if speeds.size:
+                return float(np.min(speeds)), float(np.max(speeds))
+
+        reward_speed_range = self.config.get("reward_speed_range")
+        if reward_speed_range is not None:
+            speeds = np.asarray(reward_speed_range, dtype=np.float32).reshape(-1)
+            if speeds.size >= 2:
+                low = float(np.min(speeds[:2]))
+                high = float(np.max(speeds[:2]))
+                return low, high
+
+        return max(0.0, float(Vehicle.MIN_SPEED)), max(0.0, float(Vehicle.MAX_SPEED))
+
+    def _compute_required_success_distance(self) -> float | None:
+        if self._success_mode() != "distance":
+            return None
+
+        explicit_threshold = self.config.get("success_min_distance")
+        if explicit_threshold is not None:
+            return max(0.0, float(explicit_threshold))
+
+        min_speed, max_speed = self._get_success_speed_bounds()
+        min_speed = max(0.0, float(min_speed))
+        max_speed = max(min_speed, float(max_speed))
+
+        range_fraction = float(self.config.get("success_speed_range_fraction", 0.75))
+        max_fraction = float(self.config.get("success_speed_max_fraction", 0.8))
+        required_avg_speed = max(
+            min_speed + range_fraction * (max_speed - min_speed),
+            max_fraction * max_speed,
+        )
+
+        policy_frequency = max(1e-6, float(self.config["policy_frequency"]))
+        configured_max_steps = self.config.get("success_max_steps")
+        if configured_max_steps is None:
+            max_steps = float(self.config["duration"]) * policy_frequency
+        else:
+            max_steps = float(configured_max_steps)
+        return max_steps * required_avg_speed / policy_frequency
+
+    def _get_longitudinal_progress(self) -> float:
+        try:
+            lane = self.road.network.get_lane(self.vehicle.lane_index)
+            longitudinal, _ = lane.local_coordinates(self.vehicle.position)
+            return float(longitudinal)
+        except Exception:
+            return float(self.vehicle.position[0])
+
+    def _reset_success_state(self) -> None:
+        self._success_initial_progress = self._get_longitudinal_progress()
+        self._required_success_distance = self._compute_required_success_distance()
+
+    def _distance_travelled(self) -> float:
+        return max(0.0, self._get_longitudinal_progress() - self._success_initial_progress)
 
     def _reward(self, action: Action) -> float:
         """
@@ -137,7 +217,11 @@ class HighwayEnv(AbstractEnv):
     def _is_terminated(self) -> bool:
         """The episode is over if the ego vehicle crashed."""
         return (
-            self.vehicle.crashed
+            (
+                bool(self.config.get("terminate_on_success", False))
+                and self._is_success()
+            )
+            or self.vehicle.crashed
             or self.config["offroad_terminal"]
             and not self.vehicle.on_road
         )
@@ -145,6 +229,29 @@ class HighwayEnv(AbstractEnv):
     def _is_truncated(self) -> bool:
         """The episode is truncated if the time limit is reached."""
         return self.time >= self.config["duration"]
+
+    def _is_success(self) -> bool:
+        if self._success_mode() != "distance":
+            return False
+        if bool(getattr(self.vehicle, "crashed", False)) or not bool(self.vehicle.on_road):
+            return False
+        if self._required_success_distance is None:
+            return False
+        return self._distance_travelled() >= self._required_success_distance
+
+    def _info(self, obs: Observation, action: Action | None = None) -> dict:
+        info = super()._info(obs, action)
+        if self._success_mode() == "distance":
+            info.update(
+                {
+                    "success": bool(self._is_success()),
+                    "distance_travelled": float(self._distance_travelled()),
+                    "required_success_distance": float(
+                        self._required_success_distance or 0.0
+                    ),
+                }
+            )
+        return info
 
 
 class HighwayEnvFast(HighwayEnv):

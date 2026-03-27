@@ -57,7 +57,7 @@ def run_self_play(
     if root_exploration_fraction is None:
         root_exploration_fraction = config.root_exploration_fraction
 
-    env = init_env(seed=env_seed)
+    env = init_env(seed=env_seed, stage="self_play")
     network = AlphaZeroNetwork(
         input_shape=input_shape,
         n_residual_layers=n_residual_layers,

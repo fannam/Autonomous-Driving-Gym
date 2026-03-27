@@ -1,0 +1,113 @@
+{
+  "scenario_name": "highway",
+  "environment": {
+    "env_id": "highway-v0",
+    "render_mode": "rgb_array",
+    "config": {
+      "observation": {
+        "type": "DetailedOccupancyGrid",
+        "features": ["presence", "on_lane", "on_road"],
+        "grid_size": [[-50, 50], [-12, 12]],
+        "grid_step": [1.0, 1.0],
+        "absolute": false,
+        "align_to_vehicle_axes": true,
+        "include_ego_vehicle": true,
+        "on_road_mode": "area",
+        "on_road_soft_mode": true,
+        "presence_subsamples": 5,
+        "on_road_subsamples": 3
+      },
+      "collision_reward": 0,
+      "left_lane_constraint": 0,
+      "left_lane_reward": 0,
+      "high_speed_reward": 0,
+      "vehicles_density": 1,
+      "success_mode": "distance",
+      "terminate_on_success": true,
+      "success_max_steps": null,
+      "success_min_distance": null,
+      "success_speed_range_fraction": 0.75,
+      "success_speed_max_fraction": 0.8,
+      "action": {
+        "type": "DiscreteMetaAction",
+        "longitudinal": true,
+        "lateral": true,
+        "target_speeds": [20, 25, 30]
+      },
+      "lanes_count": 4,
+      "policy_frequency": 1,
+      "duration": 40
+    }
+  },
+  "presets": {
+    "self_play": {
+      "stack": {
+        "history_length": 5,
+        "append_raw_ego_speed_plane": false,
+        "mark_ego_in_init": true,
+        "presence_feature_name": "presence",
+        "lane_feature_name": "on_lane",
+        "lane_feature_fallback_name": "on_road"
+      },
+      "n_actions": 5,
+      "n_residual_layers": 10,
+      "c_puct": 2.5,
+      "n_simulations": 5,
+      "temperature": 1.0,
+      "temperature_drop_step": null,
+      "root_dirichlet_alpha": 0.3,
+      "root_exploration_fraction": 0.25,
+      "learning_rate": 0.001,
+      "weight_decay": 0.0001,
+      "batch_size": 32,
+      "epochs": 10,
+      "model_path": "alphazero_model (19).pth"
+    },
+    "inference": {
+      "stack": {
+        "history_length": 5,
+        "append_raw_ego_speed_plane": false,
+        "mark_ego_in_init": true,
+        "presence_feature_name": "presence",
+        "lane_feature_name": "on_lane",
+        "lane_feature_fallback_name": "on_road"
+      },
+      "n_actions": 5,
+      "n_residual_layers": 10,
+      "c_puct": 3.5,
+      "n_simulations": 15,
+      "temperature": 0.0,
+      "temperature_drop_step": null,
+      "root_dirichlet_alpha": 0.3,
+      "root_exploration_fraction": 0.25,
+      "learning_rate": 0.001,
+      "weight_decay": 0.0001,
+      "batch_size": 64,
+      "epochs": 30,
+      "model_path": "alphazero_model (19).pth"
+    },
+    "evaluation": {
+      "stack": {
+        "history_length": 5,
+        "append_raw_ego_speed_plane": false,
+        "mark_ego_in_init": true,
+        "presence_feature_name": "presence",
+        "lane_feature_name": "on_lane",
+        "lane_feature_fallback_name": "on_road"
+      },
+      "n_actions": 5,
+      "n_residual_layers": 10,
+      "c_puct": 3.5,
+      "n_simulations": 15,
+      "temperature": 0.0,
+      "temperature_drop_step": null,
+      "root_dirichlet_alpha": 0.3,
+      "root_exploration_fraction": 0.25,
+      "learning_rate": 0.001,
+      "weight_decay": 0.0001,
+      "batch_size": 64,
+      "epochs": 30,
+      "model_path": "alphazero_model (19).pth"
+    }
+  }
+}

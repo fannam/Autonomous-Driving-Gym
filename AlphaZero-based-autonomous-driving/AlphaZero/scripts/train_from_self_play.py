@@ -6,7 +6,7 @@ from pathlib import Path
 import torch
 
 try:
-    from core.settings import SELF_PLAY_CONFIG
+    from core.settings import ACTIVE_SCENARIO, CONFIG_PATH, SELF_PLAY_CONFIG
     from network.alphazero_network import AlphaZeroNetwork
     from training.trainer import AlphaZeroTrainer
 except ModuleNotFoundError as exc:
@@ -15,7 +15,7 @@ except ModuleNotFoundError as exc:
     package_root = Path(__file__).resolve().parents[1]
     if str(package_root) not in sys.path:
         sys.path.insert(0, str(package_root))
-    from core.settings import SELF_PLAY_CONFIG
+    from core.settings import ACTIVE_SCENARIO, CONFIG_PATH, SELF_PLAY_CONFIG
     from network.alphazero_network import AlphaZeroNetwork
     from training.trainer import AlphaZeroTrainer
 
@@ -91,8 +91,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--input-dir",
-        default="AlphaZero-based-autonomous-driving/outputs/racetrack_self_play_parallel",
-        help="Directory containing per-episode .pt files produced by self_play_parallel_racetrack.py.",
+        default="AlphaZero-based-autonomous-driving/outputs/self_play_parallel",
+        help="Directory containing per-episode .pt files produced by the parallel self-play script.",
     )
     parser.add_argument(
         "--pattern",
@@ -199,6 +199,8 @@ def main():
 
     print(f"loaded_files={len(episode_paths)}")
     print(f"loaded_samples={int(states.shape[0])}")
+    print(f"config_path={CONFIG_PATH}")
+    print(f"active_scenario={ACTIVE_SCENARIO}")
     print(f"input_shape={input_shape}")
     print(f"n_actions={n_actions}")
     if model_in is not None:

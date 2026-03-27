@@ -6,6 +6,8 @@ __all__ = [
     "MCTSNode",
     "StackConfig",
     "AlphaZeroConfig",
+    "CONFIG_PATH",
+    "ACTIVE_SCENARIO",
     "SELF_PLAY_CONFIG",
     "INFERENCE_CONFIG",
     "EVALUATION_CONFIG",
@@ -41,11 +43,15 @@ def __getattr__(name):
     if name in {
         "StackConfig",
         "AlphaZeroConfig",
+        "CONFIG_PATH",
+        "ACTIVE_SCENARIO",
         "SELF_PLAY_CONFIG",
         "INFERENCE_CONFIG",
         "EVALUATION_CONFIG",
     }:
         from .core.settings import (
+            ACTIVE_SCENARIO,
+            CONFIG_PATH,
             AlphaZeroConfig,
             EVALUATION_CONFIG,
             INFERENCE_CONFIG,
@@ -56,6 +62,8 @@ def __getattr__(name):
         return {
             "StackConfig": StackConfig,
             "AlphaZeroConfig": AlphaZeroConfig,
+            "CONFIG_PATH": CONFIG_PATH,
+            "ACTIVE_SCENARIO": ACTIVE_SCENARIO,
             "SELF_PLAY_CONFIG": SELF_PLAY_CONFIG,
             "INFERENCE_CONFIG": INFERENCE_CONFIG,
             "EVALUATION_CONFIG": EVALUATION_CONFIG,

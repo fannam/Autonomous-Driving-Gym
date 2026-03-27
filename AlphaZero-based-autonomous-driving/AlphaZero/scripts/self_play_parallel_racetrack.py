@@ -9,71 +9,78 @@ from pathlib import Path
 from queue import Empty
 
 import gymnasium as gym
-import numpy as np
 import torch
 
 import highway_env  # noqa: F401
 
 try:
-    from core.settings import SELF_PLAY_CONFIG
+    from core.settings import ACTIVE_SCENARIO, CONFIG_PATH, SELF_PLAY_CONFIG
+    from environment.config import build_env_spec
     from network.alphazero_network import AlphaZeroNetwork
     from training.trainer import AlphaZeroTrainer
 except ModuleNotFoundError as exc:
-    if exc.name not in {"core", "network", "training", "AlphaZero"}:
+    if exc.name not in {"core", "environment", "network", "training", "AlphaZero"}:
         raise
     package_root = Path(__file__).resolve().parents[1]
     if str(package_root) not in sys.path:
         sys.path.insert(0, str(package_root))
-    from core.settings import SELF_PLAY_CONFIG
+    from core.settings import ACTIVE_SCENARIO, CONFIG_PATH, SELF_PLAY_CONFIG
+    from environment.config import build_env_spec
     from network.alphazero_network import AlphaZeroNetwork
     from training.trainer import AlphaZeroTrainer
 
 
-def build_racetrack_env_config(
-    duration: int,
-    other_vehicles: int,
-    finish_laps: int,
-    terminate_on_finish: bool,
-) -> dict:
-    return {
-        "observation": {
-            "type": "DetailedOccupancyGrid",
-            "features": ["presence", "on_lane", "on_road"],
-            "grid_size": [[-50, 50], [-12, 12]],
-            "grid_step": [1.0, 1.0],
-            "absolute": False,
-            "align_to_vehicle_axes": True,
-            "include_ego_vehicle": True,
-            "on_road_mode": "area",
-            "on_road_soft_mode": True,
-            "presence_subsamples": 5,
-            "on_road_subsamples": 3,
-        },
-        "action": {
-            "type": "DiscreteAction",
-            "longitudinal": True,
-            "lateral": True,
-            "actions_per_axis": 5,
-            "acceleration_range": [-5.0, 5.0],
-            "steering_range": [-np.pi / 6, np.pi / 6],
-        },
-        "simulation_frequency": 15,
-        "policy_frequency": 5,
-        "duration": duration,
-        "collision_reward": -1,
-        "lane_centering_cost": 4,
-        "lane_centering_reward": 1,
-        # RacetrackEnv computes np.linalg.norm(action). With discrete ids this term
-        # should be neutralized to avoid reward distortion from action index values.
-        "action_reward": 0.0,
-        "controlled_vehicles": 1,
-        "other_vehicles": other_vehicles,
-        "terminate_off_road": True,
-        "terminate_on_finish": terminate_on_finish,
-        "finish_laps": finish_laps,
-        "finish_line_segment": ("a", "b"),
-        "finish_line_longitudinal": 0.0,
-    }
+def _maybe_set_env_override(
+    overrides: dict,
+    base_env_config: dict,
+    key: str,
+    value,
+) -> None:
+    if value is None:
+        return
+    if key in base_env_config:
+        overrides[key] = value
+
+
+def _resolve_parallel_self_play_env_spec(args: argparse.Namespace):
+    base_spec = build_env_spec(stage="self_play", env_name=args.env_id)
+    if args.env_id is not None and args.env_id != build_env_spec(stage="self_play").env_id:
+        print(
+            "Warning: --env-id overrides only the environment id. "
+            "It does not switch the active AlphaZero preset. "
+            "Prefer selecting a scenario config under configs/ or setting ALPHAZERO_SCENARIO instead.",
+            flush=True,
+        )
+    env_overrides = {}
+    _maybe_set_env_override(env_overrides, base_spec.config, "duration", args.duration)
+    _maybe_set_env_override(
+        env_overrides,
+        base_spec.config,
+        "other_vehicles",
+        args.other_vehicles,
+    )
+    _maybe_set_env_override(
+        env_overrides,
+        base_spec.config,
+        "finish_laps",
+        args.finish_laps,
+    )
+    _maybe_set_env_override(
+        env_overrides,
+        base_spec.config,
+        "terminate_on_finish",
+        args.terminate_on_finish,
+    )
+
+    if not env_overrides:
+        return base_spec
+    return build_env_spec(
+        stage="self_play",
+        scenario_name=base_spec.scenario_name,
+        env_name=base_spec.env_id,
+        render_mode=base_spec.render_mode,
+        env_config_overrides=env_overrides,
+    )
 
 
 def _serialize_training_data(training_data, n_actions: int):
@@ -382,7 +389,11 @@ def _run_worker(task: dict) -> dict:
     torch.set_num_threads(int(task["torch_threads_per_worker"]))
     torch.manual_seed(int(task["network_seed"]))
 
-    env = gym.make(task["env_id"], config=task["env_config"], render_mode="rgb_array")
+    env = gym.make(
+        task["env_id"],
+        config=task["env_config"],
+        render_mode=task["render_mode"],
+    )
 
     network = AlphaZeroNetwork(
         input_shape=tuple(task["input_shape"]),
@@ -726,7 +737,11 @@ def _resolve_worker_episode_counts(args: argparse.Namespace) -> list[int]:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Parallel self-play for racetrack-v0.")
+    parser = argparse.ArgumentParser(
+        description=(
+            "Parallel self-play using the active scenario config from the repo-level configs/ directory."
+        )
+    )
     parser.add_argument("--workers", type=int, default=2, help="Number of parallel worker processes.")
     parser.add_argument(
         "--episodes-per-worker",
@@ -743,22 +758,44 @@ def parse_args() -> argparse.Namespace:
             "Overrides --episodes-per-worker when provided."
         ),
     )
-    parser.add_argument("--env-id", default="racetrack-v0")
-    parser.add_argument("--duration", type=int, default=80)
-    parser.add_argument("--other-vehicles", type=int, default=1)
-    parser.add_argument("--finish-laps", type=int, default=1)
+    parser.add_argument(
+        "--env-id",
+        default=None,
+        help=(
+            "Optional environment id override. By default the value comes from "
+            "the active scenario config in configs/."
+        ),
+    )
+    parser.add_argument(
+        "--duration",
+        type=int,
+        default=None,
+        help="Optional top-level env config override for `duration`.",
+    )
+    parser.add_argument(
+        "--other-vehicles",
+        type=int,
+        default=None,
+        help="Optional top-level env config override for `other_vehicles`.",
+    )
+    parser.add_argument(
+        "--finish-laps",
+        type=int,
+        default=None,
+        help="Optional top-level env config override for `finish_laps`.",
+    )
+    parser.set_defaults(terminate_on_finish=None)
     parser.add_argument(
         "--terminate-on-finish",
         dest="terminate_on_finish",
         action="store_true",
-        default=True,
-        help="End the episode as soon as the ego vehicle completes the configured number of laps.",
+        help="Optional top-level env config override for `terminate_on_finish=true`.",
     )
     parser.add_argument(
         "--no-terminate-on-finish",
         dest="terminate_on_finish",
         action="store_false",
-        help="Keep running after crossing the finish line; success will still be reported in env info.",
+        help="Optional top-level env config override for `terminate_on_finish=false`.",
     )
     parser.add_argument(
         "--self-play-seed",
@@ -867,7 +904,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--output-dir",
-        default="AlphaZero-based-autonomous-driving/outputs/racetrack_self_play_parallel",
+        default="AlphaZero-based-autonomous-driving/outputs/self_play_parallel",
     )
     parser.add_argument(
         "--result-timeout",
@@ -922,14 +959,13 @@ def main():
         torch.save(network.state_dict(), model_path)
         created_temp_model = True
 
-    env_config = build_racetrack_env_config(
-        duration=args.duration,
-        other_vehicles=args.other_vehicles,
-        finish_laps=args.finish_laps,
-        terminate_on_finish=args.terminate_on_finish,
-    )
+    env_spec = _resolve_parallel_self_play_env_spec(args)
+    env_config = env_spec.config
 
-    print(f"env_id={args.env_id}")
+    print(f"config_path={CONFIG_PATH}")
+    print(f"active_scenario={ACTIVE_SCENARIO}")
+    print(f"resolved_scenario={env_spec.scenario_name}")
+    print(f"env_id={env_spec.env_id}")
     total_requested_episodes = int(sum(worker_episode_counts))
     if args.total_episodes is None:
         print(
@@ -943,7 +979,14 @@ def main():
         )
     print(f"n_actions={config.n_actions}, n_simulations={args.n_simulations}")
     print(f"max_expand_actions={args.max_expand_actions}")
-    print(f"finish_laps={args.finish_laps}, terminate_on_finish={args.terminate_on_finish}")
+    if "duration" in env_config:
+        print(f"env.duration={env_config['duration']}")
+    if "other_vehicles" in env_config:
+        print(f"env.other_vehicles={env_config['other_vehicles']}")
+    if "finish_laps" in env_config:
+        print(f"env.finish_laps={env_config['finish_laps']}")
+    if "terminate_on_finish" in env_config:
+        print(f"env.terminate_on_finish={env_config['terminate_on_finish']}")
     print(f"temperature={temperature}, temperature_drop_step={temperature_drop_step}")
     print(f"dirichlet_alpha={root_dirichlet_alpha}, root_exploration_fraction={root_exploration_fraction}")
     print(f"mcts_max_root_visits={args.mcts_max_root_visits}")
@@ -986,8 +1029,9 @@ def main():
         task = {
             "worker_id": worker_id,
             "episodes_per_worker": worker_episode_counts[worker_id],
-            "env_id": args.env_id,
+            "env_id": env_spec.env_id,
             "env_config": env_config,
+            "render_mode": env_spec.render_mode,
             "self_play_seed": worker_self_play_seed,
             "network_seed": args.network_seed,
             "model_path": str(model_path),

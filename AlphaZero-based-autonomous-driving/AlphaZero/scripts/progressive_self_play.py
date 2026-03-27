@@ -11,7 +11,7 @@ from pathlib import Path
 import torch
 
 try:
-    from core.settings import SELF_PLAY_CONFIG
+    from core.settings import ACTIVE_SCENARIO, CONFIG_PATH, SELF_PLAY_CONFIG
     from network.alphazero_network import AlphaZeroNetwork
 except ModuleNotFoundError as exc:
     if exc.name not in {"core", "network", "AlphaZero"}:
@@ -19,7 +19,7 @@ except ModuleNotFoundError as exc:
     package_root = Path(__file__).resolve().parents[1]
     if str(package_root) not in sys.path:
         sys.path.insert(0, str(package_root))
-    from core.settings import SELF_PLAY_CONFIG
+    from core.settings import ACTIVE_SCENARIO, CONFIG_PATH, SELF_PLAY_CONFIG
     from network.alphazero_network import AlphaZeroNetwork
 
 
@@ -308,6 +308,8 @@ def _build_manifest(
         "schema_version": 1,
         "created_at_utc": _utc_now_iso(),
         "hostname": socket.gethostname(),
+        "config_path": str(CONFIG_PATH),
+        "active_scenario": ACTIVE_SCENARIO,
         "iteration": int(args.iteration),
         "batch_name": batch_dir.name,
         "batch_dir": str(batch_dir),
@@ -346,6 +348,8 @@ def main() -> int:
         f"skip_run={bool(args.skip_run)} "
         f"overwrite={bool(args.overwrite)}"
     )
+    log(f"config_path={CONFIG_PATH}")
+    log(f"active_scenario={ACTIVE_SCENARIO}")
     log(f"source_model={source_model}")
     log(f"source_model_sha256={source_model_sha256}")
     if bootstrap_mode:

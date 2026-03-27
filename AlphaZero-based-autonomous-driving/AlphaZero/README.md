@@ -7,8 +7,8 @@ This folder is organized by feature packages.
 - `core/`: search logic and state preprocessing
   - `mcts.py`: `MCTSNode`, `MCTS`
   - `policy.py`: `softmax_policy`
-  - `settings.py`: central runtime configs (input shape, grid, ego position, stack planes)
-  - `state_stack.py`: `StateStackManager`, 8-layer and 9-layer stack helpers
+  - `settings.py`: stage presets loaded from repo-level scenario configs under `configs/`
+  - `state_stack.py`: `StateStackManager`, stack helpers with normalized speed context and an optional raw ego-speed plane
 - `network/`: neural network definitions
   - `alphazero_network.py`: `AlphaZeroNetwork`
 - `training/`: training pipeline
@@ -38,13 +38,20 @@ from AlphaZero.environment.config import init_env
 
 ## Configure Once
 
-Tune hardcoded defaults in one place:
+Tune scenario defaults in one place:
 
-- `AlphaZero/core/settings.py`
+- `configs/racetrack.yaml`
+- `configs/highway.yaml`
 
 Examples:
 
 - `StackConfig.grid_size`, `StackConfig.ego_position`
-- `StackConfig.include_absolute_speed` (8-layer vs 9-layer stack)
+- `StackConfig.append_raw_ego_speed_plane` (whether to append a raw ego-speed plane)
 - `AlphaZeroConfig.n_actions`, `AlphaZeroConfig.n_residual_layers`
 - Presets: `SELF_PLAY_CONFIG`, `INFERENCE_CONFIG`, `EVALUATION_CONFIG`
+
+## Scenario Switching
+
+- By default the stack reads `configs/racetrack.yaml`.
+- Set `ALPHAZERO_SCENARIO=highway` to load `configs/highway.yaml`.
+- Optionally set `ALPHAZERO_CONFIG_PATH=/path/to/custom.yaml` to use a different config file altogether.

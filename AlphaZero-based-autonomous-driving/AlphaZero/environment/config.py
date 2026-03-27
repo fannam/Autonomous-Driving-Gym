@@ -1,11 +1,26 @@
+from __future__ import annotations
+
+import copy
+from dataclasses import dataclass
+
 import gymnasium as gym
-import highway_env
+import highway_env  # noqa: F401
 import numpy as np
 
-
-DEFAULT_OBSERVATION_FEATURES = ["presence", "on_lane", "on_road"]
-DEFAULT_GRID_SIZE = [[-50, 50], [-12, 12]]
-DEFAULT_GRID_STEP = [1.0, 1.0]
+try:
+    from core.runtime_config import (
+        get_active_scenario_name,
+        get_environment_config,
+        merge_config_dicts,
+    )
+except ModuleNotFoundError as exc:
+    if exc.name != "core":
+        raise
+    from ..core.runtime_config import (
+        get_active_scenario_name,
+        get_environment_config,
+        merge_config_dicts,
+    )
 
 
 def compute_grid_shape(grid_size, grid_step):
@@ -15,55 +30,138 @@ def compute_grid_shape(grid_size, grid_step):
     return tuple(int(axis_cells) for axis_cells in grid_shape)
 
 
+def _default_environment_payload() -> dict:
+    return get_environment_config(stage="self_play")
+
+
+_DEFAULT_ENVIRONMENT_PAYLOAD = _default_environment_payload()
+DEFAULT_OBSERVATION_FEATURES = (
+    _DEFAULT_ENVIRONMENT_PAYLOAD.get("config", {})
+    .get("observation", {})
+    .get("features", ["presence", "on_lane", "on_road"])
+)
+DEFAULT_GRID_SIZE = (
+    _DEFAULT_ENVIRONMENT_PAYLOAD.get("config", {})
+    .get("observation", {})
+    .get("grid_size", [[-50, 50], [-12, 12]])
+)
+DEFAULT_GRID_STEP = (
+    _DEFAULT_ENVIRONMENT_PAYLOAD.get("config", {})
+    .get("observation", {})
+    .get("grid_step", [1.0, 1.0])
+)
+
+
+@dataclass(frozen=True)
+class EnvironmentSpec:
+    scenario_name: str
+    env_id: str
+    render_mode: str | None
+    config: dict
+
+
+def build_env_spec(
+    *,
+    stage: str = "self_play",
+    scenario_name: str | None = None,
+    env_name: str | None = None,
+    render_mode: str | None = None,
+    env_config_overrides: dict | None = None,
+) -> EnvironmentSpec:
+    resolved_scenario = scenario_name or get_active_scenario_name()
+    environment = get_environment_config(
+        stage=stage,
+        scenario_name=resolved_scenario,
+    )
+    env_id = str(env_name or environment.get("env_id"))
+    if not env_id:
+        raise ValueError(
+            f"Scenario {resolved_scenario!r} does not define a valid environment id."
+        )
+
+    base_config = environment.get("config", {})
+    if not isinstance(base_config, dict):
+        raise ValueError(
+            f"Scenario {resolved_scenario!r} has invalid environment config payload."
+        )
+    env_config = copy.deepcopy(base_config)
+    if env_config_overrides:
+        env_config = merge_config_dicts(env_config, env_config_overrides)
+
+    resolved_render_mode = (
+        render_mode if render_mode is not None else environment.get("render_mode")
+    )
+    return EnvironmentSpec(
+        scenario_name=resolved_scenario,
+        env_id=env_id,
+        render_mode=resolved_render_mode,
+        config=env_config,
+    )
+
+
 class EnvironmentFactory:
     @staticmethod
-    def default_config(vehicle_density=1):
-        return {
-            "observation": {
-                "type": "DetailedOccupancyGrid",
-                "vehicles_count": 50,
-                "features": DEFAULT_OBSERVATION_FEATURES,
-                "features_range": {
-                    "x": [-100, 100],
-                    "y": [-100, 100],
-                    "vx": [-30, 30],
-                    "vy": [-20, 20],
-                },
-                "grid_size": DEFAULT_GRID_SIZE,
-                "grid_step": DEFAULT_GRID_STEP,
-                "absolute": False,
-                "align_to_vehicle_axes": True,
-                "include_ego_vehicle": True,
-                "on_road_mode": "area",
-                "on_road_soft_mode": True,
-                "presence_subsamples": 5,
-                "on_road_subsamples": 3,
-            },
-            "collision_reward": 0,
-            "left_lane_constraint": 0,
-            "left_lane_reward": 0,
-            "high_speed_reward": 0,
-            "vehicles_density": vehicle_density,
-            "action": {
-                "type": "DiscreteAction",
-                "longitudinal": True,
-                "lateral": True,
-                "actions_per_axis": 5,  # 5x5 = 25 discrete actions
-                "acceleration_range": [-5.0, 5.0],
-                "steering_range": [-np.pi / 6, np.pi / 6],
-            },
-            "lanes_count": 4,
-            "policy_frequency": 1,
-            "duration": 40,
-        }
+    def default_spec(stage: str = "self_play", scenario_name: str | None = None) -> EnvironmentSpec:
+        return build_env_spec(stage=stage, scenario_name=scenario_name)
+
+    @staticmethod
+    def default_config(
+        vehicle_density: float | None = None,
+        stage: str = "self_play",
+        scenario_name: str | None = None,
+    ) -> dict:
+        config = copy.deepcopy(
+            EnvironmentFactory.default_spec(
+                stage=stage,
+                scenario_name=scenario_name,
+            ).config
+        )
+        if vehicle_density is not None and "vehicles_density" in config:
+            config["vehicles_density"] = vehicle_density
+        return config
 
     @classmethod
-    def create(cls, env_name="highway-v0", vehicle_density=1, seed=21, render_mode="rgb_array"):
-        env_config = cls.default_config(vehicle_density=vehicle_density)
-        env = gym.make(env_name, config=env_config, render_mode=render_mode)
+    def create(
+        cls,
+        env_name: str | None = None,
+        vehicle_density: float | None = None,
+        seed: int = 21,
+        render_mode: str | None = None,
+        stage: str = "self_play",
+        scenario_name: str | None = None,
+        env_config_overrides: dict | None = None,
+    ):
+        spec = build_env_spec(
+            stage=stage,
+            scenario_name=scenario_name,
+            env_name=env_name,
+            render_mode=render_mode,
+            env_config_overrides=env_config_overrides,
+        )
+        env_config = copy.deepcopy(spec.config)
+        if vehicle_density is not None and "vehicles_density" in env_config:
+            env_config["vehicles_density"] = vehicle_density
+
+        env = gym.make(spec.env_id, config=env_config, render_mode=spec.render_mode)
         env.reset(seed=seed)
         return env
 
 
-def init_env(env_name="highway-v0", vehicle_density=1, seed=21):
-    return EnvironmentFactory.create(env_name=env_name, vehicle_density=vehicle_density, seed=seed)
+def init_env(
+    env_name: str | None = None,
+    vehicle_density: float | None = None,
+    seed: int = 21,
+    render_mode: str | None = None,
+    stage: str = "self_play",
+    scenario_name: str | None = None,
+    env_config_overrides: dict | None = None,
+):
+    return EnvironmentFactory.create(
+        env_name=env_name,
+        vehicle_density=vehicle_density,
+        seed=seed,
+        render_mode=render_mode,
+        stage=stage,
+        scenario_name=scenario_name,
+        env_config_overrides=env_config_overrides,
+    )

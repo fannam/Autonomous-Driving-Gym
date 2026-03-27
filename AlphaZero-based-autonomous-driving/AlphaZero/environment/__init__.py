@@ -1,3 +1,3 @@
-from .config import EnvironmentFactory, init_env
+from .config import EnvironmentFactory, build_env_spec, init_env
 
-__all__ = ["EnvironmentFactory", "init_env"]
+__all__ = ["EnvironmentFactory", "build_env_spec", "init_env"]

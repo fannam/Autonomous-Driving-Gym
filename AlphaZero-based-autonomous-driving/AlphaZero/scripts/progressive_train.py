@@ -9,7 +9,7 @@ from pathlib import Path
 import torch
 
 try:
-    from core.settings import SELF_PLAY_CONFIG
+    from core.settings import ACTIVE_SCENARIO, CONFIG_PATH, SELF_PLAY_CONFIG
     from network.alphazero_network import AlphaZeroNetwork
     from training.trainer import AlphaZeroTrainer
 except ModuleNotFoundError as exc:
@@ -18,7 +18,7 @@ except ModuleNotFoundError as exc:
     package_root = Path(__file__).resolve().parents[1]
     if str(package_root) not in sys.path:
         sys.path.insert(0, str(package_root))
-    from core.settings import SELF_PLAY_CONFIG
+    from core.settings import ACTIVE_SCENARIO, CONFIG_PATH, SELF_PLAY_CONFIG
     from network.alphazero_network import AlphaZeroNetwork
     from training.trainer import AlphaZeroTrainer
 
@@ -192,6 +192,8 @@ def _load_batches(
                 "episode_file_count": len(episode_paths),
                 "sample_count": sample_count,
                 "source_model": manifest.get("source_model") if manifest else None,
+                "active_scenario": manifest.get("active_scenario") if manifest else None,
+                "config_path": manifest.get("config_path") if manifest else None,
             }
         )
 
@@ -199,6 +201,30 @@ def _load_batches(
     policies = torch.cat(policies_list, dim=0)
     values = torch.cat(values_list, dim=0)
     return batch_summaries, states, policies, values
+
+
+def _validate_batch_scenarios(
+    selected_batches: list[tuple[Path, dict | None]],
+) -> None:
+    manifest_scenarios = {
+        str(manifest.get("active_scenario"))
+        for _, manifest in selected_batches
+        if isinstance(manifest, dict) and manifest.get("active_scenario")
+    }
+    if len(manifest_scenarios) > 1:
+        raise ValueError(
+            "Selected self-play batches contain multiple scenarios: "
+            f"{sorted(manifest_scenarios)}. Train each scenario separately."
+        )
+    if manifest_scenarios:
+        batch_scenario = next(iter(manifest_scenarios))
+        if batch_scenario != ACTIVE_SCENARIO:
+            raise ValueError(
+                "Selected self-play batches were generated for scenario "
+                f"{batch_scenario!r}, but the active training scenario is "
+                f"{ACTIVE_SCENARIO!r}. Select the matching file under configs/ or set "
+                "ALPHAZERO_SCENARIO to match the data you are training on."
+            )
 
 
 def parse_args() -> argparse.Namespace:
@@ -291,6 +317,7 @@ def main() -> int:
         raise FileNotFoundError(f"Input checkpoint does not exist: {model_in}")
 
     selected_batches = _resolve_selected_batches(args)
+    _validate_batch_scenarios(selected_batches)
     batch_summaries, states, policies, values = _load_batches(selected_batches)
 
     input_shape = _resolve_input_shape(states)
@@ -340,6 +367,8 @@ def main() -> int:
     training_manifest = {
         "schema_version": 1,
         "created_at_utc": _utc_now_iso(),
+        "config_path": str(CONFIG_PATH),
+        "active_scenario": ACTIVE_SCENARIO,
         "training_iteration": int(args.iteration),
         "model_in": {
             "path": str(model_in),
@@ -372,6 +401,8 @@ def main() -> int:
 
     print(f"loaded_batches={len(batch_summaries)}")
     print(f"loaded_samples={int(states.shape[0])}")
+    print(f"config_path={CONFIG_PATH}")
+    print(f"active_scenario={ACTIVE_SCENARIO}")
     print(f"input_shape={input_shape}")
     print(f"n_actions={n_actions}")
     print(f"model_in={model_in}")

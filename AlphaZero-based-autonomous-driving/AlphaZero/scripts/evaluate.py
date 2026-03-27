@@ -25,7 +25,7 @@ def evaluate_episode(network, seed, model_path=None, config=None, device="auto")
         config = DEFAULT_CONFIG
     if model_path is None:
         model_path = config.model_path
-    env = init_env(env_name="highway-v0", vehicle_density=1.0, seed=seed)
+    env = init_env(seed=seed, stage="evaluation")
     trainer = AlphaZeroTrainer(
         network=network,
         env=env,

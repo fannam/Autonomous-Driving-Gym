@@ -21,6 +21,7 @@ setup(
         "gymnasium>=1.2.3",
         "highway-env",
         "numpy>=2.4.2",
+        "PyYAML>=6.0.2",
         "torch>=2.10.0",
     ],
     entry_points={
