@@ -85,10 +85,10 @@ Single-process self-play:
 uv run python AlphaZero-based-autonomous-driving/AlphaZero/scripts/self_play.py
 ```
 
-Parallel racetrack self-play:
+Parallel self-play (racetrack example):
 
 ```bash
-uv run python AlphaZero-based-autonomous-driving/AlphaZero/scripts/self_play_parallel_racetrack.py \
+uv run python AlphaZero-based-autonomous-driving/AlphaZero/scripts/self_play_parallel.py \
   --workers 2 \
   --episodes-per-worker 2 \
   --finish-laps 1 \
@@ -111,7 +111,7 @@ Offline training from saved self-play episodes:
 
 ```bash
 uv run python AlphaZero-based-autonomous-driving/AlphaZero/scripts/train_from_self_play.py \
-  --input-dir AlphaZero-based-autonomous-driving/outputs/racetrack_self_play_parallel \
+  --input-dir AlphaZero-based-autonomous-driving/outputs/self_play_parallel \
   --model-out AlphaZero-based-autonomous-driving/outputs/alphazero_from_self_play.pth
 ```
 
@@ -119,17 +119,17 @@ uv run python AlphaZero-based-autonomous-driving/AlphaZero/scripts/train_from_se
 
 ## Important script behavior
 
-`self_play_parallel_racetrack.py`:
+`self_play_parallel.py`:
 
 - generates self-play data in parallel worker processes
 - saves one `.pt` file per episode
-- uses the lap-based racetrack finish condition
+- uses the active scenario config from `configs/`
 - does not apply an extra hard step cap by default
 
 Default output directory:
 
 ```text
-AlphaZero-based-autonomous-driving/outputs/racetrack_self_play_parallel
+AlphaZero-based-autonomous-driving/outputs/self_play_parallel
 ```
 
 Useful flags:
@@ -172,7 +172,7 @@ Important parameters there include:
 
 The repository now supports a simple two-stage AlphaZero workflow:
 
-- generate self-play episodes as `.pt` files with `self_play_parallel_racetrack.py`
+- generate self-play episodes as `.pt` files with `self_play_parallel.py`
 - train a checkpoint from those saved tensors with `train_from_self_play.py`
 
 Each episode file stores:

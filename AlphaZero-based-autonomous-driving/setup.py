@@ -27,6 +27,7 @@ setup(
     entry_points={
         "console_scripts": [
             "alphazero-self-play=AlphaZero.scripts.self_play:main",
+            "alphazero-self-play-parallel=AlphaZero.scripts.self_play_parallel:main",
             "alphazero-self-play-racetrack=AlphaZero.scripts.self_play_parallel_racetrack:main",
             "alphazero-train-from-self-play=AlphaZero.scripts.train_from_self_play:main",
             "alphazero-progressive-self-play=AlphaZero.scripts.progressive_self_play:main",

@@ -15,10 +15,10 @@ from pathlib import Path
 
 DEFAULT_REPO_URL = "https://github.com/fannam/Autonomous-Driving-Gym.git"
 SELF_PLAY_SCRIPT = Path(
-    "AlphaZero-based-autonomous-driving/AlphaZero/scripts/self_play_parallel_racetrack.py"
+    "AlphaZero-based-autonomous-driving/AlphaZero/scripts/self_play_parallel.py"
 )
 DEFAULT_OUTPUT_DIR = Path(
-    "AlphaZero-based-autonomous-driving/outputs/racetrack_self_play_parallel"
+    "AlphaZero-based-autonomous-driving/outputs/self_play_parallel"
 )
 DEFAULT_ERROR_TAIL_LINES = 60
 DEFAULT_CPU_RESULT_TIMEOUT_SECONDS = 14_400
@@ -443,11 +443,11 @@ def parse_args() -> tuple[argparse.Namespace, list[str]]:
     parser = argparse.ArgumentParser(
         description=(
             "Clone the Autonomous-Driving-Gym repository, install dependencies, "
-            "and run the parallel AlphaZero racetrack self-play script."
+            "and run the parallel AlphaZero self-play script."
         ),
         epilog=(
             "Any unknown arguments are forwarded to "
-            "AlphaZero/scripts/self_play_parallel_racetrack.py.\n\n"
+            "AlphaZero/scripts/self_play_parallel.py.\n\n"
             "Example:\n"
             "  python bootstrap_parallel_self_play.py "
             "--repo-dir /tmp/adg-run --workers 4 --episodes-per-worker 8 --duration 120"

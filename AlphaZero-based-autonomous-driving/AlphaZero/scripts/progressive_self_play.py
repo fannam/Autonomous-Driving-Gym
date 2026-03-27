@@ -23,7 +23,7 @@ except ModuleNotFoundError as exc:
     from network.alphazero_network import AlphaZeroNetwork
 
 
-SELF_PLAY_SCRIPT = Path(__file__).resolve().with_name("self_play_parallel_racetrack.py")
+SELF_PLAY_SCRIPT = Path(__file__).resolve().with_name("self_play_parallel.py")
 DEFAULT_OUTPUT_ROOT = Path(
     "AlphaZero-based-autonomous-driving/outputs/progressive_self_play"
 )

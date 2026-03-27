@@ -8,8 +8,8 @@ It contains Jupyter notebooks that wrap the maintained AlphaZero CLI scripts in:
 
 Current notebooks:
 
-- `01_self_play_parallel_racetrack.ipynb`
-  Generate `.pt` self-play episodes with the parallel racetrack workflow.
+- `01_self_play_parallel.ipynb`
+  Generate `.pt` self-play episodes with the parallel self-play workflow.
 - `02_train_from_self_play.ipynb`
   Train a checkpoint from saved self-play episodes.
 - `03_loop_self_play_train.ipynb`
