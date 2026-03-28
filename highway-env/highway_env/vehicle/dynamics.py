@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from typing import Callable
 
-import matplotlib.pyplot as plt
 import numpy as np
 
 from highway_env.road.road import Road
@@ -306,6 +305,14 @@ def simulate(dt: float = 0.1) -> None:
 
 
 def plot(time: np.ndarray, xx: np.ndarray, uu: np.ndarray) -> None:
+    try:
+        import matplotlib.pyplot as plt
+    except Exception as exc:
+        raise RuntimeError(
+            "plot() requires a working matplotlib installation/backend. "
+            "For headless environments, set MPLBACKEND=Agg."
+        ) from exc
+
     pos_x, pos_y = xx[:, 0, 0], xx[:, 1, 0]
     psi_x, psi_y = np.cos(xx[:, 2, 0]), np.sin(xx[:, 2, 0])
     dir_x, dir_y = np.cos(xx[:, 2, 0] + uu[:, 0, 0]), np.sin(xx[:, 2, 0] + uu[:, 0, 0])

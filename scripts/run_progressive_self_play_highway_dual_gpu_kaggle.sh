@@ -4,6 +4,12 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
+# Kaggle notebooks often export MPLBACKEND=module://matplotlib_inline.backend_inline,
+# which breaks subprocess imports of matplotlib. Force a headless-safe backend.
+if [[ "${MPLBACKEND:-}" == "module://matplotlib_inline.backend_inline" || -z "${MPLBACKEND:-}" ]]; then
+  export MPLBACKEND="Agg"
+fi
+
 export ALPHAZERO_SCENARIO="highway"
 export ALPHAZERO_CONFIG_PATH="$REPO_ROOT/configs/highway.yaml"
 
