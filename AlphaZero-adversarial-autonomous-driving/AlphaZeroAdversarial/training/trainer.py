@@ -9,7 +9,13 @@ import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 
-from ..core.game import TerminalOutcome, classify_terminal_state
+from ..core.game import (
+    TerminalOutcome,
+    classify_terminal_state,
+    get_agent_snapshots,
+    get_available_actions,
+    get_progress_value,
+)
 from ..core.mcts import SimultaneousMCTS, SimultaneousMCTSNode
 from ..core.perspective_stack import PerspectiveTensorBuilder
 from ..core.settings import AdversarialAlphaZeroConfig
@@ -134,6 +140,144 @@ class AdversarialAlphaZeroTrainer:
     def _greedy_action(policy_dict: dict[int, float]) -> int:
         return max(policy_dict, key=policy_dict.get)
 
+    @staticmethod
+    def _normalize_policy_dict(policy_dict: dict[int, float]) -> dict[int, float]:
+        if not policy_dict:
+            return {}
+
+        actions = np.asarray(list(policy_dict.keys()), dtype=np.int64)
+        probabilities = np.asarray(list(policy_dict.values()), dtype=np.float64)
+        valid_mask = np.isfinite(probabilities) & (probabilities > 0.0)
+        if not np.any(valid_mask):
+            return {}
+
+        actions = actions[valid_mask]
+        probabilities = probabilities[valid_mask]
+        probability_sum = float(np.sum(probabilities))
+        if probability_sum <= 0.0 or not np.isfinite(probability_sum):
+            return {}
+
+        probabilities /= probability_sum
+        if not np.all(np.isfinite(probabilities)):
+            return {}
+        return {
+            int(action): float(probability)
+            for action, probability in zip(actions, probabilities)
+        }
+
+    def _fallback_uniform_policy(
+        self,
+        *,
+        agent_index: int,
+        policy_modes: tuple[str | None, str | None],
+        root_node: SimultaneousMCTSNode,
+    ) -> dict[int, float]:
+        if agent_index == 0:
+            candidate_actions = tuple(root_node.ego_available_actions)
+        else:
+            candidate_actions = tuple(root_node.npc_available_actions)
+
+        if not candidate_actions:
+            ego_actions, npc_actions = get_available_actions(
+                self._require_env(),
+                policy_modes=policy_modes,
+            )
+            candidate_actions = ego_actions if agent_index == 0 else npc_actions
+
+        if not candidate_actions:
+            raise RuntimeError(
+                f"Could not resolve any valid actions for agent_index={agent_index}."
+            )
+
+        uniform_probability = 1.0 / len(candidate_actions)
+        return {
+            int(action): uniform_probability
+            for action in candidate_actions
+        }
+
+    def _resolve_valid_policy(
+        self,
+        *,
+        policy_dict: dict[int, float],
+        agent_index: int,
+        policy_modes: tuple[str | None, str | None],
+        root_node: SimultaneousMCTSNode,
+    ) -> dict[int, float]:
+        normalized_policy = self._normalize_policy_dict(policy_dict)
+        if normalized_policy:
+            return normalized_policy
+
+        fallback_policy = self._fallback_uniform_policy(
+            agent_index=agent_index,
+            policy_modes=policy_modes,
+            root_node=root_node,
+        )
+        print(
+            "[trainer] invalid/empty policy detected; "
+            f"falling back to uniform distribution for agent_index={agent_index}",
+            flush=True,
+        )
+        return fallback_policy
+
+    def _root_matches_environment(
+        self,
+        *,
+        root_node: SimultaneousMCTSNode,
+        outcome: TerminalOutcome,
+    ) -> bool:
+        root_env = getattr(root_node, "env", None)
+        if root_env is None:
+            return False
+
+        if root_node.terminal_outcome.terminal != outcome.terminal:
+            return False
+
+        try:
+            current_snapshots = get_agent_snapshots(self._require_env())
+            root_snapshots = get_agent_snapshots(root_env)
+        except Exception:
+            return False
+
+        for current_snapshot, root_snapshot in zip(current_snapshots, root_snapshots):
+            if (
+                current_snapshot.on_road != root_snapshot.on_road
+                or current_snapshot.crashed != root_snapshot.crashed
+            ):
+                return False
+            if not np.allclose(
+                current_snapshot.position,
+                root_snapshot.position,
+                atol=1e-3,
+                rtol=0.0,
+            ):
+                return False
+            if not np.isclose(
+                current_snapshot.heading,
+                root_snapshot.heading,
+                atol=1e-3,
+                rtol=0.0,
+            ):
+                return False
+            if not np.isclose(
+                current_snapshot.speed,
+                root_snapshot.speed,
+                atol=1e-3,
+                rtol=0.0,
+            ):
+                return False
+
+        if not np.isclose(
+            get_progress_value(self._require_env()),
+            get_progress_value(root_env),
+            atol=1e-3,
+            rtol=0.0,
+        ):
+            return False
+
+        if outcome.terminal:
+            return True
+        return bool(root_node.ego_available_actions) and bool(root_node.npc_available_actions)
+
     def _finalize_outcome(
         self,
         *,
@@ -174,6 +318,10 @@ class AdversarialAlphaZeroTrainer:
         outcome = root_node.terminal_outcome
 
         while not outcome.terminal and (max_steps is None or step_count < max_steps):
+            if not self._root_matches_environment(root_node=root_node, outcome=outcome):
+                root_node = self._build_root_node(policy_modes=policy_modes)
+                mcts = self._build_mcts(root_node)
+
             root_node.ensure_perspective_batch(self.tensor_builder)
             state_batch = np.copy(root_node.cached_perspective_batch)
 
@@ -187,6 +335,18 @@ class AdversarialAlphaZeroTrainer:
             npc_policy = mcts.action_distribution(
                 agent_index=1,
                 temperature=0.0 if policy_modes[1] is not None else temperature,
+            )
+            ego_policy = self._resolve_valid_policy(
+                policy_dict=ego_policy,
+                agent_index=0,
+                policy_modes=policy_modes,
+                root_node=root_node,
+            )
+            npc_policy = self._resolve_valid_policy(
+                policy_dict=npc_policy,
+                agent_index=1,
+                policy_modes=policy_modes,
+                root_node=root_node,
             )
 
             episode_samples.append(
@@ -219,6 +379,12 @@ class AdversarialAlphaZeroTrainer:
             if self.reuse_tree_between_steps and joint_action in root_node.children:
                 mcts.move_to_new_root(joint_action)
                 root_node = mcts.root
+                if not self._root_matches_environment(
+                    root_node=root_node,
+                    outcome=post_step_outcome,
+                ):
+                    root_node = self._build_root_node(policy_modes=policy_modes)
+                    mcts = self._build_mcts(root_node)
             else:
                 root_node = self._build_root_node(policy_modes=policy_modes)
                 mcts = self._build_mcts(root_node)

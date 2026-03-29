@@ -236,7 +236,7 @@ def _run_worker(task: dict) -> dict:
     np.random.seed(int(task["self_play_seed"]))
 
     import gymnasium as gym
-    import highway_env  # noqa: F401
+    import highway_env
 
     output_dir = Path(task["output_dir"])
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -262,6 +262,7 @@ def _run_worker(task: dict) -> dict:
         env=env,
         device=device,
         verbose=False,
+        reuse_tree_between_steps=bool(task["reuse_tree_between_steps"]),
         add_root_dirichlet_noise=bool(task["add_root_dirichlet_noise"]),
     )
 
@@ -281,7 +282,12 @@ def _run_worker(task: dict) -> dict:
     print(
         f"[worker {worker_id}] pid={os.getpid()} device={device} "
         f"episodes={episodes_per_worker} n_simulations={task['config'].n_simulations} "
+        f"reuse_tree={int(task['reuse_tree_between_steps'])} "
         f"output={output_dir}",
+        flush=True,
+    )
+    print(
+        f"[worker {worker_id}] highway_env={Path(highway_env.__file__).resolve()}",
         flush=True,
     )
 
@@ -383,6 +389,19 @@ def _worker_entry(task: dict, result_queue) -> None:
         )
 
 
+def _terminate_live_processes(processes: list[mp.Process]) -> None:
+    for process in processes:
+        if process.is_alive():
+            print(
+                f"[manager] terminating worker pid={process.pid}",
+                flush=True,
+            )
+            process.terminate()
+
+    for process in processes:
+        process.join(timeout=5.0)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Run adversarial AlphaZero self-play on Kaggle with one worker per GPU."
@@ -416,6 +435,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dirichlet-alpha", type=float, default=None)
     parser.add_argument("--root-exploration-fraction", type=float, default=None)
     parser.add_argument("--max-expand-actions-per-agent", type=int, default=None)
+    parser.add_argument("--no-reuse-tree-between-steps", action="store_true")
     return parser.parse_args()
 
 
@@ -461,6 +481,7 @@ def main() -> int:
         f"{episode_mode} "
         f"device={args.device} "
         f"n_simulations={config.n_simulations} "
+        f"reuse_tree={int(not args.no_reuse_tree_between_steps)} "
         f"num_gpus={args.num_gpus if args.num_gpus is not None else 'auto'} "
         f"gpu_indices={args.gpu_indices if args.gpu_indices is not None else 'auto'} "
         f"result_timeout={args.result_timeout if args.result_timeout > 0 else 'disabled'}",
@@ -505,6 +526,7 @@ def main() -> int:
             "network_channels": int(config.network_channels),
             "network_dropout_p": float(config.network_dropout_p),
             "config": config,
+            "reuse_tree_between_steps": not bool(args.no_reuse_tree_between_steps),
             "add_root_dirichlet_noise": True,
         }
         process = ctx.Process(
@@ -524,43 +546,47 @@ def main() -> int:
     pending_worker_ids = set(range(len(processes)))
     worker_results = []
 
-    while pending_worker_ids:
-        timeout = None if args.result_timeout <= 0 else max(1.0, float(args.result_timeout))
-        try:
-            result = result_queue.get(timeout=timeout)
-        except Empty:
-            pending_alive = [
-                worker_id
-                for worker_id in sorted(pending_worker_ids)
-                if processes[worker_id].is_alive()
-            ]
-            if pending_alive:
-                raise TimeoutError(
-                    "Timed out waiting for worker results. "
-                    f"Still running: {pending_alive}"
+    try:
+        while pending_worker_ids:
+            timeout = None if args.result_timeout <= 0 else max(1.0, float(args.result_timeout))
+            try:
+                result = result_queue.get(timeout=timeout)
+            except Empty:
+                pending_alive = [
+                    worker_id
+                    for worker_id in sorted(pending_worker_ids)
+                    if processes[worker_id].is_alive()
+                ]
+                if pending_alive:
+                    raise TimeoutError(
+                        "Timed out waiting for worker results. "
+                        f"Still running: {pending_alive}"
+                    )
+                raise RuntimeError("Timed out and found no live workers.")
+
+            if not result["ok"]:
+                raise RuntimeError(
+                    f"Worker {result['worker_id']} failed:\n{result['error']}"
                 )
-            raise RuntimeError("Timed out and found no live workers.")
 
-        if not result["ok"]:
-            raise RuntimeError(
-                f"Worker {result['worker_id']} failed:\n{result['error']}"
+            worker_result = result["result"]
+            pending_worker_ids.discard(int(worker_result["worker_id"]))
+            worker_results.append(worker_result)
+            print(
+                f"[manager] worker={worker_result['worker_id']} device={worker_result['device']} "
+                f"samples={worker_result['total_samples']} shards={len(worker_result['shards'])}",
+                flush=True,
             )
 
-        worker_result = result["result"]
-        pending_worker_ids.discard(int(worker_result["worker_id"]))
-        worker_results.append(worker_result)
-        print(
-            f"[manager] worker={worker_result['worker_id']} device={worker_result['device']} "
-            f"samples={worker_result['total_samples']} shards={len(worker_result['shards'])}",
-            flush=True,
-        )
-
-    for process in processes:
-        process.join(timeout=5.0)
-        if process.exitcode not in (0, None):
-            raise RuntimeError(
-                f"Worker process {process.pid} exited with code {process.exitcode}."
-            )
+        for process in processes:
+            process.join(timeout=5.0)
+            if process.exitcode not in (0, None):
+                raise RuntimeError(
+                    f"Worker process {process.pid} exited with code {process.exitcode}."
+                )
+    except Exception:
+        _terminate_live_processes(processes)
+        raise
 
     manifest = {
         "created_at_epoch_s": time.time(),

@@ -14,7 +14,12 @@ def normalize_policy(
 
     available_probs = np.asarray(
         [float(policy.get(action, 0.0)) for action in available_actions],
-        dtype=np.float32,
+        dtype=np.float64,
+    )
+    available_probs = np.where(
+        np.isfinite(available_probs) & (available_probs > 0.0),
+        available_probs,
+        0.0,
     )
     prob_sum = float(np.sum(available_probs))
     if prob_sum <= 0.0 or not np.isfinite(prob_sum):
@@ -24,6 +29,11 @@ def normalize_policy(
         return normalized
 
     available_probs /= prob_sum
+    if not np.all(np.isfinite(available_probs)):
+        uniform_prob = 1.0 / len(available_actions)
+        for action in available_actions:
+            normalized[int(action)] = uniform_prob
+        return normalized
     for action, prob in zip(available_actions, available_probs):
         normalized[int(action)] = float(prob)
     return normalized

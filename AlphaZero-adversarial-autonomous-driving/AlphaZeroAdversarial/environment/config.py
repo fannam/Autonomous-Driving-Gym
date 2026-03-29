@@ -1,7 +1,15 @@
 from __future__ import annotations
 
 import copy
+import sys
 from dataclasses import dataclass
+from pathlib import Path
+
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+_LOCAL_HIGHWAY_ENV_ROOT = _REPO_ROOT / "highway-env"
+if _LOCAL_HIGHWAY_ENV_ROOT.exists() and str(_LOCAL_HIGHWAY_ENV_ROOT) not in sys.path:
+    # The adversarial environment relies on custom classes from the local highway-env fork.
+    sys.path.insert(0, str(_LOCAL_HIGHWAY_ENV_ROOT))
 
 import gymnasium as gym
 import highway_env  # noqa: F401

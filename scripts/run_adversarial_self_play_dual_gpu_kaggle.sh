@@ -37,6 +37,7 @@ TEMPERATURE_DROP_STEP="${TEMPERATURE_DROP_STEP:-}"
 DIRICHLET_ALPHA="${DIRICHLET_ALPHA:-}"
 ROOT_EXPLORATION_FRACTION="${ROOT_EXPLORATION_FRACTION:-}"
 MAX_EXPAND_ACTIONS_PER_AGENT="${MAX_EXPAND_ACTIONS_PER_AGENT:-}"
+REUSE_TREE_BETWEEN_STEPS="${REUSE_TREE_BETWEEN_STEPS:-1}"
 MAX_STEPS_PER_EPISODE="${MAX_STEPS_PER_EPISODE:-}"
 PROGRESS_INTERVAL="${PROGRESS_INTERVAL:-10}"
 RESULT_TIMEOUT="${RESULT_TIMEOUT:-}"
@@ -134,6 +135,10 @@ if [[ -n "$MAX_EXPAND_ACTIONS_PER_AGENT" ]]; then
   cmd+=(--max-expand-actions-per-agent "$MAX_EXPAND_ACTIONS_PER_AGENT")
 fi
 
+if [[ "$REUSE_TREE_BETWEEN_STEPS" == "0" || "${REUSE_TREE_BETWEEN_STEPS,,}" == "false" ]]; then
+  cmd+=(--no-reuse-tree-between-steps)
+fi
+
 if [[ -n "$MAX_STEPS_PER_EPISODE" ]]; then
   cmd+=(--max-steps-per-episode "$MAX_STEPS_PER_EPISODE")
 fi
@@ -189,6 +194,8 @@ printf '[run-adversarial-self-play-dual-gpu-kaggle] scenario=%s config=%s model=
   "$OUTPUT_DIR" \
   "$INSTALL_DEPS" \
   "${RESULT_TIMEOUT:-disabled}"
+
+printf 'reuse_tree_between_steps=%s\n' "$REUSE_TREE_BETWEEN_STEPS"
 
 if [[ -n "$LOG_FILE" ]]; then
   mkdir -p "$(dirname "$LOG_FILE")"
