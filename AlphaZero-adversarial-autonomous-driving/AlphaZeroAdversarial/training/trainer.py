@@ -153,6 +153,7 @@ class AdversarialAlphaZeroTrainer:
         episode_index: int = 0,
         max_steps: int | None = None,
         store_in_replay: bool = True,
+        return_examples: bool = False,
         add_root_dirichlet_noise: bool | None = None,
         sample_actions: bool = True,
         step_callback=None,
@@ -189,11 +190,11 @@ class AdversarialAlphaZeroTrainer:
             )
 
             episode_samples.append(
-                (state_batch[0], self._policy_dict_to_vector(ego_policy), 0)
+                (np.copy(state_batch[0]), self._policy_dict_to_vector(ego_policy), 0)
             )
             if collect_npc_samples:
                 episode_samples.append(
-                    (state_batch[1], self._policy_dict_to_vector(npc_policy), 1)
+                    (np.copy(state_batch[1]), self._policy_dict_to_vector(npc_policy), 1)
                 )
 
             choose_action = self._sample_action if sample_actions and temperature > 1e-8 else self._greedy_action
@@ -202,12 +203,15 @@ class AdversarialAlphaZeroTrainer:
             joint_action = (ego_action, npc_action)
             env.step(joint_action)
             step_count += 1
+            post_step_outcome = classify_terminal_state(env, self.config.zero_sum)
 
             if step_callback is not None:
                 step_callback(
                     {
                         "step": step_count,
                         "joint_action": joint_action,
+                        "done": bool(post_step_outcome.terminal),
+                        "outcome_reason": post_step_outcome.reason,
                         "search_stats": search_stats,
                     }
                 )
@@ -219,7 +223,7 @@ class AdversarialAlphaZeroTrainer:
                 root_node = self._build_root_node(policy_modes=policy_modes)
                 mcts = self._build_mcts(root_node)
 
-            outcome = classify_terminal_state(env, self.config.zero_sum)
+            outcome = post_step_outcome
 
         max_steps_reached = max_steps is not None and step_count >= max_steps and not outcome.terminal
         outcome = self._finalize_outcome(
@@ -228,10 +232,17 @@ class AdversarialAlphaZeroTrainer:
         )
         self.last_episode_outcome = outcome
 
+        episode_examples = [
+            (
+                state,
+                policy_vector,
+                float(outcome.ego_value if agent_index == 0 else outcome.npc_value),
+            )
+            for state, policy_vector, agent_index in episode_samples
+        ]
+
         if store_in_replay:
-            for state, policy_vector, agent_index in episode_samples:
-                target_value = outcome.ego_value if agent_index == 0 else outcome.npc_value
-                self.replay_buffer.append((state, policy_vector, float(target_value)))
+            self.replay_buffer.extend(episode_examples)
 
         summary = {
             "seed": int(seed),
@@ -243,6 +254,8 @@ class AdversarialAlphaZeroTrainer:
             "policy_modes": policy_modes,
             "collected_samples": len(episode_samples) if store_in_replay else 0,
         }
+        if return_examples:
+            summary["episode_examples"] = episode_examples
         self.last_episode_summary = summary
         if self.verbose:
             print(
