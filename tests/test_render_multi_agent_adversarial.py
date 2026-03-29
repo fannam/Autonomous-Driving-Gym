@@ -31,6 +31,15 @@ DEFAULT_CONFIG_PATH = (
     / "configs"
     / "racetrack_adversarial.yaml"
 )
+CONTROLLED_AGENT_COLORS = (
+    (50, 200, 0),
+    (200, 0, 150),
+)
+
+
+class ObserverProxy:
+    def __init__(self, position: np.ndarray) -> None:
+        self.position = np.asarray(position, dtype=np.float32)
 
 
 def load_config(config_path: Path) -> dict[str, Any]:
@@ -123,6 +132,63 @@ def ensure_multi_agent_contract(env, observation) -> None:
         raise AssertionError("Expected a tuple action space for 2 agents.")
 
 
+def get_controlled_vehicles(env) -> tuple[Any, Any]:
+    controlled_vehicles = getattr(env.unwrapped, "controlled_vehicles", ())
+    if len(controlled_vehicles) < 2:
+        raise AssertionError(
+            f"Expected at least 2 controlled vehicles, got {len(controlled_vehicles)}."
+        )
+    return controlled_vehicles[0], controlled_vehicles[1]
+
+
+def colorize_controlled_vehicles(env) -> None:
+    ego_vehicle, npc_vehicle = get_controlled_vehicles(env)
+    ego_vehicle.color = CONTROLLED_AGENT_COLORS[0]
+    npc_vehicle.color = CONTROLLED_AGENT_COLORS[1]
+
+
+def compute_camera_position(env, camera_mode: str) -> np.ndarray | None:
+    ego_vehicle, npc_vehicle = get_controlled_vehicles(env)
+    if camera_mode == "first":
+        return np.asarray(ego_vehicle.position, dtype=np.float32)
+    if camera_mode == "second":
+        return np.asarray(npc_vehicle.position, dtype=np.float32)
+    if camera_mode == "midpoint":
+        return 0.5 * (
+            np.asarray(ego_vehicle.position, dtype=np.float32)
+            + np.asarray(npc_vehicle.position, dtype=np.float32)
+        )
+    if camera_mode == "auto":
+        return None
+    raise ValueError(f"Unsupported camera mode: {camera_mode!r}")
+
+
+def configure_viewer(
+    env,
+    *,
+    camera_mode: str,
+    scaling: float | None,
+) -> None:
+    viewer = getattr(env.unwrapped, "viewer", None)
+    if viewer is None:
+        return
+
+    if scaling is not None:
+        viewer.sim_surface.scaling = float(scaling)
+
+    camera_position = compute_camera_position(env, camera_mode)
+    if camera_position is None:
+        viewer.observer_vehicle = None
+        return
+
+    observer_proxy = getattr(viewer, "_multi_agent_observer_proxy", None)
+    if observer_proxy is None:
+        observer_proxy = ObserverProxy(camera_position)
+        viewer._multi_agent_observer_proxy = observer_proxy
+    observer_proxy.position = np.asarray(camera_position, dtype=np.float32)
+    viewer.observer_vehicle = observer_proxy
+
+
 def inspect_render_result(
     frame: Any,
     step_label: str,
@@ -186,6 +252,8 @@ def run_render_smoke_test(
     seed: int,
     render_mode: str | None,
     action_mode: str,
+    camera_mode: str,
+    scaling: float | None,
 ) -> dict[str, Any]:
     config = load_config(config_path)
     env_id, config_render_mode, env_config = get_environment_payload(config)
@@ -200,7 +268,14 @@ def run_render_smoke_test(
     try:
         observation, info = env.reset(seed=seed)
         ensure_multi_agent_contract(env, observation)
+        colorize_controlled_vehicles(env)
 
+        frame = env.render()
+        configure_viewer(
+            env,
+            camera_mode=camera_mode,
+            scaling=scaling,
+        )
         frame = env.render()
         initial_render = inspect_render_result(frame, "reset", resolved_render_mode)
 
@@ -213,6 +288,11 @@ def run_render_smoke_test(
             joint_action = scripted_joint_action(env, action_mode)
             observation, reward, terminated, truncated, info = env.step(joint_action)
             ensure_multi_agent_contract(env, observation)
+            configure_viewer(
+                env,
+                camera_mode=camera_mode,
+                scaling=scaling,
+            )
             frame = env.render()
             render_info = inspect_render_result(
                 frame,
@@ -242,6 +322,9 @@ def run_render_smoke_test(
             "requested_steps": int(steps),
             "executed_steps": int(rollout_steps),
             "action_mode": action_mode,
+            "camera_mode": camera_mode,
+            "scaling": None if scaling is None else float(scaling),
+            "controlled_agent_colors": CONTROLLED_AGENT_COLORS,
             "initial_render_result_type": initial_render["result_type"],
             "initial_frame_shape": initial_render["frame_shape"],
             "terminated": bool(terminated),
@@ -288,6 +371,19 @@ def parse_args() -> argparse.Namespace:
         default="idle",
         help="How to generate the two-agent action tuple during the smoke test.",
     )
+    parser.add_argument(
+        "--camera-mode",
+        type=str,
+        choices=("auto", "first", "second", "midpoint"),
+        default="midpoint",
+        help="Which camera target to use for rendering.",
+    )
+    parser.add_argument(
+        "--scaling",
+        type=float,
+        default=2.0,
+        help="Viewer scaling. Smaller values zoom out more. Use 0 or negative to keep env default.",
+    )
     return parser.parse_args()
 
 
@@ -299,6 +395,8 @@ def main() -> None:
         seed=args.seed,
         render_mode=args.render_mode,
         action_mode=args.action_mode,
+        camera_mode=args.camera_mode,
+        scaling=None if args.scaling is None or args.scaling <= 0 else args.scaling,
     )
     print(json.dumps(summary, indent=2))
 
