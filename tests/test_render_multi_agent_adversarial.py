@@ -123,9 +123,44 @@ def ensure_multi_agent_contract(env, observation) -> None:
         raise AssertionError("Expected a tuple action space for 2 agents.")
 
 
-def ensure_frame(frame: Any, step_label: str) -> tuple[int, int, int]:
+def inspect_render_result(
+    frame: Any,
+    step_label: str,
+    render_mode: str | None,
+) -> dict[str, Any]:
+    if render_mode == "human":
+        if frame is None:
+            return {
+                "result_type": "none",
+                "frame_shape": None,
+            }
+        if isinstance(frame, np.ndarray):
+            if frame.ndim != 3:
+                raise AssertionError(
+                    f"{step_label}: expected frame shape (H, W, C), got {frame.shape}."
+                )
+            if frame.shape[2] not in (3, 4):
+                raise AssertionError(
+                    f"{step_label}: expected 3 or 4 channels, got {frame.shape[2]}."
+                )
+            return {
+                "result_type": "ndarray",
+                "frame_shape": (
+                    int(frame.shape[0]),
+                    int(frame.shape[1]),
+                    int(frame.shape[2]),
+                ),
+            }
+        raise AssertionError(
+            f"{step_label}: render_mode='human' expected None or numpy.ndarray, "
+            f"got {type(frame).__name__}."
+        )
+
     if not isinstance(frame, np.ndarray):
-        raise AssertionError(f"{step_label}: render() must return a numpy array.")
+        raise AssertionError(
+            f"{step_label}: render_mode={render_mode!r} must return a numpy array, "
+            f"got {type(frame).__name__}."
+        )
     if frame.ndim != 3:
         raise AssertionError(
             f"{step_label}: expected frame shape (H, W, C), got {frame.shape}."
@@ -134,7 +169,14 @@ def ensure_frame(frame: Any, step_label: str) -> tuple[int, int, int]:
         raise AssertionError(
             f"{step_label}: expected 3 or 4 channels, got {frame.shape[2]}."
         )
-    return int(frame.shape[0]), int(frame.shape[1]), int(frame.shape[2])
+    return {
+        "result_type": "ndarray",
+        "frame_shape": (
+            int(frame.shape[0]),
+            int(frame.shape[1]),
+            int(frame.shape[2]),
+        ),
+    }
 
 
 def run_render_smoke_test(
@@ -160,7 +202,7 @@ def run_render_smoke_test(
         ensure_multi_agent_contract(env, observation)
 
         frame = env.render()
-        initial_frame_shape = ensure_frame(frame, "reset")
+        initial_render = inspect_render_result(frame, "reset", resolved_render_mode)
 
         rollout_steps = 0
         terminated = False
@@ -172,7 +214,11 @@ def run_render_smoke_test(
             observation, reward, terminated, truncated, info = env.step(joint_action)
             ensure_multi_agent_contract(env, observation)
             frame = env.render()
-            frame_shape = ensure_frame(frame, f"step {step_index + 1}")
+            render_info = inspect_render_result(
+                frame,
+                f"step {step_index + 1}",
+                resolved_render_mode,
+            )
             rollout_steps += 1
             step_records.append(
                 {
@@ -181,7 +227,8 @@ def run_render_smoke_test(
                     "reward": float(reward),
                     "terminated": bool(terminated),
                     "truncated": bool(truncated),
-                    "frame_shape": frame_shape,
+                    "render_result_type": render_info["result_type"],
+                    "frame_shape": render_info["frame_shape"],
                 }
             )
             if terminated or truncated:
@@ -195,7 +242,8 @@ def run_render_smoke_test(
             "requested_steps": int(steps),
             "executed_steps": int(rollout_steps),
             "action_mode": action_mode,
-            "initial_frame_shape": initial_frame_shape,
+            "initial_render_result_type": initial_render["result_type"],
+            "initial_frame_shape": initial_render["frame_shape"],
             "terminated": bool(terminated),
             "truncated": bool(truncated),
             "step_records": step_records,
