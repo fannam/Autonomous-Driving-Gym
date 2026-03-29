@@ -1,0 +1,148 @@
+{
+  "scenario_name": "racetrack_adversarial",
+  "environment": {
+    "env_id": "racetrack-v0",
+    "render_mode": "rgb_array",
+    "config": {
+      "observation": {
+        "type": "MultiAgentObservation",
+        "observation_config": {
+          "type": "DetailedOccupancyGrid",
+          "features": ["on_lane", "on_road"],
+          "grid_size": [[-50, 50], [-12, 12]],
+          "grid_step": [1.0, 1.0],
+          "absolute": false,
+          "align_to_vehicle_axes": true,
+          "include_ego_vehicle": false,
+          "on_road_mode": "area",
+          "on_road_soft_mode": true,
+          "presence_subsamples": 5,
+          "on_road_subsamples": 3
+        }
+      },
+      "action": {
+        "type": "MultiAgentAction",
+        "action_config": {
+          "type": "DiscreteAction",
+          "longitudinal": true,
+          "lateral": true,
+          "actions_per_axis": 5,
+          "acceleration_range": [-5.0, 5.0],
+          "steering_range": [-0.5235987755982988, 0.5235987755982988]
+        }
+      },
+      "simulation_frequency": 15,
+      "policy_frequency": 5,
+      "duration": 80,
+      "collision_reward": -1,
+      "lane_centering_cost": 4,
+      "lane_centering_reward": 1,
+      "action_reward": 0.0,
+      "controlled_vehicles": 2,
+      "other_vehicles": 0,
+      "terminate_off_road": true,
+      "terminate_on_finish": true,
+      "finish_laps": 1,
+      "finish_line_segment": ["a", "b"],
+      "finish_line_longitudinal": 0.0
+    }
+  },
+  "presets": {
+    "self_play": {
+      "tensor": {
+        "history_length": 5,
+        "static_feature_names": ["on_lane", "on_road"],
+        "include_self_speed_plane": true,
+        "include_heading_planes": true,
+        "include_progress_plane": true
+      },
+      "zero_sum": {
+        "minimum_safe_speed": 5.0
+      },
+      "n_actions": 25,
+      "n_residual_layers": 10,
+      "network_channels": 256,
+      "network_dropout_p": 0.1,
+      "c_puct": 2.5,
+      "n_simulations": 24,
+      "temperature": 1.0,
+      "temperature_drop_step": 16,
+      "root_dirichlet_alpha": 0.3,
+      "root_exploration_fraction": 0.25,
+      "max_expand_actions_per_agent": 6,
+      "learning_rate": 0.001,
+      "weight_decay": 0.0001,
+      "batch_size": 32,
+      "epochs": 10,
+      "replay_buffer_size": 4000,
+      "warmup_episodes": 10,
+      "warmup_opponent_policy": "idle",
+      "warmup_collect_opponent_samples": false,
+      "model_path": "models/alphazero_adversarial_racetrack.pth"
+    },
+    "inference": {
+      "tensor": {
+        "history_length": 5,
+        "static_feature_names": ["on_lane", "on_road"],
+        "include_self_speed_plane": true,
+        "include_heading_planes": true,
+        "include_progress_plane": true
+      },
+      "zero_sum": {
+        "minimum_safe_speed": 5.0
+      },
+      "n_actions": 25,
+      "n_residual_layers": 10,
+      "network_channels": 256,
+      "network_dropout_p": 0.0,
+      "c_puct": 3.5,
+      "n_simulations": 48,
+      "temperature": 0.0,
+      "temperature_drop_step": 0,
+      "root_dirichlet_alpha": 0.3,
+      "root_exploration_fraction": 0.0,
+      "max_expand_actions_per_agent": 8,
+      "learning_rate": 0.001,
+      "weight_decay": 0.0001,
+      "batch_size": 64,
+      "epochs": 10,
+      "replay_buffer_size": 4000,
+      "warmup_episodes": 0,
+      "warmup_opponent_policy": null,
+      "warmup_collect_opponent_samples": true,
+      "model_path": "models/alphazero_adversarial_racetrack.pth"
+    },
+    "evaluation": {
+      "tensor": {
+        "history_length": 5,
+        "static_feature_names": ["on_lane", "on_road"],
+        "include_self_speed_plane": true,
+        "include_heading_planes": true,
+        "include_progress_plane": true
+      },
+      "zero_sum": {
+        "minimum_safe_speed": 5.0
+      },
+      "n_actions": 25,
+      "n_residual_layers": 10,
+      "network_channels": 256,
+      "network_dropout_p": 0.0,
+      "c_puct": 3.5,
+      "n_simulations": 48,
+      "temperature": 0.0,
+      "temperature_drop_step": 0,
+      "root_dirichlet_alpha": 0.3,
+      "root_exploration_fraction": 0.0,
+      "max_expand_actions_per_agent": 8,
+      "learning_rate": 0.001,
+      "weight_decay": 0.0001,
+      "batch_size": 64,
+      "epochs": 10,
+      "replay_buffer_size": 4000,
+      "warmup_episodes": 0,
+      "warmup_opponent_policy": null,
+      "warmup_collect_opponent_samples": true,
+      "model_path": "models/alphazero_adversarial_racetrack.pth"
+    }
+  }
+}
