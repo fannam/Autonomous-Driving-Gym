@@ -1,14 +1,14 @@
 {
-  "scenario_name": "racetrack_adversarial",
+  "scenario_name": "highway_meta_adversarial",
   "environment": {
-    "env_id": "racetrack-v0",
+    "env_id": "highway-v0",
     "render_mode": "rgb_array",
     "config": {
       "observation": {
         "type": "MultiAgentObservation",
         "observation_config": {
           "type": "DetailedOccupancyGrid",
-          "features": ["on_lane", "on_road"],
+          "features": ["presence", "on_lane", "on_road"],
           "grid_size": [[-50, 50], [-12, 12]],
           "grid_step": [1.0, 1.0],
           "absolute": false,
@@ -23,35 +23,35 @@
       "action": {
         "type": "MultiAgentAction",
         "action_config": {
-          "type": "DiscreteAction",
+          "type": "DiscreteMetaAction",
           "longitudinal": true,
           "lateral": true,
-          "actions_per_axis": 5,
-          "acceleration_range": [-5.0, 5.0],
-          "steering_range": [-0.5235987755982988, 0.5235987755982988]
+          "target_speeds": [20, 25, 30]
         }
       },
-      "simulation_frequency": 15,
-      "policy_frequency": 2,
-      "duration": 40,
-      "collision_reward": -1,
-      "lane_centering_cost": 4,
-      "lane_centering_reward": 1,
-      "action_reward": 0.0,
+      "collision_reward": 0,
+      "left_lane_constraint": 0,
+      "left_lane_reward": 0,
+      "high_speed_reward": 0,
+      "vehicles_density": 1,
+      "success_mode": "distance",
+      "terminate_on_success": true,
+      "success_max_steps": null,
+      "success_min_distance": null,
+      "success_speed_range_fraction": 0.75,
+      "success_speed_max_fraction": 0.8,
       "controlled_vehicles": 2,
-      "other_vehicles": 0,
-      "terminate_off_road": true,
-      "terminate_on_finish": true,
-      "finish_laps": 1,
-      "finish_line_segment": ["a", "b"],
-      "finish_line_longitudinal": 0.0
+      "vehicles_count": 0,
+      "lanes_count": 4,
+      "policy_frequency": 1,
+      "duration": 40
     }
   },
   "presets": {
     "self_play": {
       "tensor": {
         "history_length": 5,
-        "static_feature_names": ["on_lane", "on_road"],
+        "static_feature_names": ["presence", "on_lane", "on_road"],
         "include_self_speed_plane": true,
         "include_heading_planes": true,
         "include_progress_plane": true,
@@ -60,9 +60,7 @@
       "zero_sum": {
         "minimum_safe_speed": 5.0
       },
-      "n_actions": 25,
-      "n_action_axis_0": 5,
-      "n_action_axis_1": 5,
+      "n_actions": 5,
       "n_residual_layers": 10,
       "network_channels": 256,
       "network_dropout_p": 0.1,
@@ -73,23 +71,21 @@
       "root_dirichlet_alpha": 0.3,
       "root_exploration_fraction": 0.25,
       "relative_pruning_gamma": 0.1,
-      "max_expand_actions_per_agent": 9,
+      "max_expand_actions_per_agent": 5,
       "learning_rate": 0.001,
       "weight_decay": 0.0001,
       "batch_size": 32,
       "epochs": 10,
       "replay_buffer_size": 4000,
-      "use_policy_target_smoothing": false,
-      "policy_target_smoothing_sigma": 1.0,
       "warmup_episodes": 10,
       "warmup_opponent_policy": "idle",
       "warmup_collect_opponent_samples": false,
-      "model_path": "models/alphazero_adversarial_racetrack.pth"
+      "model_path": "models/alphazero_meta_adversarial_highway.pth"
     },
     "inference": {
       "tensor": {
         "history_length": 5,
-        "static_feature_names": ["on_lane", "on_road"],
+        "static_feature_names": ["presence", "on_lane", "on_road"],
         "include_self_speed_plane": true,
         "include_heading_planes": true,
         "include_progress_plane": true,
@@ -98,9 +94,7 @@
       "zero_sum": {
         "minimum_safe_speed": 5.0
       },
-      "n_actions": 25,
-      "n_action_axis_0": 5,
-      "n_action_axis_1": 5,
+      "n_actions": 5,
       "n_residual_layers": 10,
       "network_channels": 256,
       "network_dropout_p": 0.0,
@@ -111,23 +105,21 @@
       "root_dirichlet_alpha": 0.3,
       "root_exploration_fraction": 0.0,
       "relative_pruning_gamma": 0.1,
-      "max_expand_actions_per_agent": 8,
+      "max_expand_actions_per_agent": 5,
       "learning_rate": 0.001,
       "weight_decay": 0.0001,
       "batch_size": 64,
       "epochs": 10,
       "replay_buffer_size": 4000,
-      "use_policy_target_smoothing": false,
-      "policy_target_smoothing_sigma": 1.0,
       "warmup_episodes": 0,
       "warmup_opponent_policy": null,
       "warmup_collect_opponent_samples": true,
-      "model_path": "models/alphazero_adversarial_racetrack.pth"
+      "model_path": "models/alphazero_meta_adversarial_highway.pth"
     },
     "evaluation": {
       "tensor": {
         "history_length": 5,
-        "static_feature_names": ["on_lane", "on_road"],
+        "static_feature_names": ["presence", "on_lane", "on_road"],
         "include_self_speed_plane": true,
         "include_heading_planes": true,
         "include_progress_plane": true,
@@ -136,9 +128,7 @@
       "zero_sum": {
         "minimum_safe_speed": 5.0
       },
-      "n_actions": 25,
-      "n_action_axis_0": 5,
-      "n_action_axis_1": 5,
+      "n_actions": 5,
       "n_residual_layers": 10,
       "network_channels": 256,
       "network_dropout_p": 0.0,
@@ -149,18 +139,16 @@
       "root_dirichlet_alpha": 0.3,
       "root_exploration_fraction": 0.0,
       "relative_pruning_gamma": 0.1,
-      "max_expand_actions_per_agent": 8,
+      "max_expand_actions_per_agent": 5,
       "learning_rate": 0.001,
       "weight_decay": 0.0001,
       "batch_size": 64,
       "epochs": 10,
       "replay_buffer_size": 4000,
-      "use_policy_target_smoothing": false,
-      "policy_target_smoothing_sigma": 1.0,
       "warmup_episodes": 0,
       "warmup_opponent_policy": null,
       "warmup_collect_opponent_samples": true,
-      "model_path": "models/alphazero_adversarial_racetrack.pth"
+      "model_path": "models/alphazero_meta_adversarial_highway.pth"
     }
   }
 }
