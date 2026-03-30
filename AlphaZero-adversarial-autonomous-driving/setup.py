@@ -27,6 +27,7 @@ setup(
     entry_points={
         "console_scripts": [
             "alphazero-adversarial-self-play=AlphaZeroAdversarial.scripts.self_play:main",
+            "alphazero-adversarial-render-steps=AlphaZeroAdversarial.scripts.render_steps:main",
             "alphazero-adversarial-self-play-kaggle-dual-gpu=AlphaZeroAdversarial.scripts.self_play_kaggle_dual_gpu:main",
             "alphazero-adversarial-train=AlphaZeroAdversarial.scripts.train:main",
             "alphazero-adversarial-evaluate=AlphaZeroAdversarial.scripts.evaluate:main",
