@@ -308,7 +308,7 @@ class AdversarialAlphaZeroTrainer:
         if add_root_dirichlet_noise is None:
             add_root_dirichlet_noise = self.add_root_dirichlet_noise
 
-        episode_samples: list[tuple[np.ndarray, np.ndarray, int]] = []
+        episode_samples: list[tuple[np.ndarray, np.ndarray, np.ndarray, int]] = []
         step_count = 0
         outcome = root_node.terminal_outcome
 
@@ -317,8 +317,9 @@ class AdversarialAlphaZeroTrainer:
                 root_node = self._build_root_node(policy_modes=policy_modes)
                 mcts = self._build_mcts(root_node)
 
-            root_node.ensure_perspective_batch(self.tensor_builder)
+            root_node.ensure_model_inputs(self.tensor_builder)
             state_batch = np.copy(root_node.cached_perspective_batch)
+            target_vector_batch = np.copy(root_node.cached_target_vector_batch)
 
             mcts.prepare_root(add_exploration_noise=bool(add_root_dirichlet_noise))
             mcts.reset_timing_stats()
@@ -345,11 +346,21 @@ class AdversarialAlphaZeroTrainer:
             )
 
             episode_samples.append(
-                (np.copy(state_batch[0]), policy_dict_to_array(ego_policy, self.config.n_actions), 0)
+                (
+                    np.copy(state_batch[0]),
+                    np.copy(target_vector_batch[0]),
+                    policy_dict_to_array(ego_policy, self.config.n_actions),
+                    0,
+                )
             )
             if collect_npc_samples:
                 episode_samples.append(
-                    (np.copy(state_batch[1]), policy_dict_to_array(npc_policy, self.config.n_actions), 1)
+                    (
+                        np.copy(state_batch[1]),
+                        np.copy(target_vector_batch[1]),
+                        policy_dict_to_array(npc_policy, self.config.n_actions),
+                        1,
+                    )
                 )
 
             choose_action = self._sample_action if sample_actions and temperature > 1e-8 else self._greedy_action
@@ -396,10 +407,11 @@ class AdversarialAlphaZeroTrainer:
         episode_examples = [
             (
                 state,
+                target_vector,
                 policy_vector,
                 float(outcome.ego_value if agent_index == 0 else outcome.npc_value),
             )
-            for state, policy_vector, agent_index in episode_samples
+            for state, target_vector, policy_vector, agent_index in episode_samples
         ]
 
         if store_in_replay:
@@ -432,15 +444,24 @@ class AdversarialAlphaZeroTrainer:
     def _build_training_tensors(self):
         if not self.replay_buffer:
             raise ValueError("Replay buffer is empty; collect self-play data first.")
-        states, policies, values = zip(*self.replay_buffer)
+        states, target_vectors, policies, values = zip(*self.replay_buffer)
         state_tensor = torch.as_tensor(np.stack(states, axis=0), dtype=torch.float32)
+        target_vector_tensor = torch.as_tensor(
+            np.stack(target_vectors, axis=0),
+            dtype=torch.float32,
+        )
         policy_tensor = torch.as_tensor(np.stack(policies, axis=0), dtype=torch.float32)
         value_tensor = torch.as_tensor(np.asarray(values, dtype=np.float32)).unsqueeze(1)
-        return state_tensor, policy_tensor, value_tensor
+        return state_tensor, target_vector_tensor, policy_tensor, value_tensor
 
     def train(self):
-        state_tensor, policy_tensor, value_tensor = self._build_training_tensors()
-        dataset = TensorDataset(state_tensor, policy_tensor, value_tensor)
+        state_tensor, target_vector_tensor, policy_tensor, value_tensor = self._build_training_tensors()
+        dataset = TensorDataset(
+            state_tensor,
+            target_vector_tensor,
+            policy_tensor,
+            value_tensor,
+        )
         dataloader = DataLoader(
             dataset,
             batch_size=int(self.config.batch_size),
@@ -455,12 +476,20 @@ class AdversarialAlphaZeroTrainer:
             epoch_value_loss_sum = 0.0
             sample_count = 0
 
-            for state_batch, policy_batch, value_batch in dataloader:
+            for state_batch, target_vector_batch, policy_batch, value_batch in dataloader:
                 state_batch = state_batch.to(self.device, non_blocking=self.device.type != "cpu")
+                target_vector_batch = target_vector_batch.to(
+                    self.device,
+                    non_blocking=self.device.type != "cpu",
+                )
                 policy_batch = policy_batch.to(self.device, non_blocking=self.device.type != "cpu")
                 value_batch = value_batch.to(self.device, non_blocking=self.device.type != "cpu")
 
-                policy_logits, predicted_value = self.network(state_batch, return_logits=True)
+                policy_logits, predicted_value = self.network(
+                    state_batch,
+                    target_vector_batch,
+                    return_logits=True,
+                )
                 policy_loss = self._kl_policy_loss(policy_logits, policy_batch)
                 value_loss = F.mse_loss(predicted_value, value_batch)
                 loss = policy_loss + value_loss
@@ -535,6 +564,17 @@ class AdversarialAlphaZeroTrainer:
 
     def load_model(self, path: str | None = None) -> None:
         model_path = Path(path or self.config.model_path)
-        self.network.load_state_dict(torch.load(model_path, map_location=self.device))
+        state_dict = torch.load(model_path, map_location=self.device)
+        try:
+            self.network.load_state_dict(state_dict)
+        except RuntimeError as exc:
+            if self.config.target_vector_dim > 0:
+                raise RuntimeError(
+                    f"Could not load checkpoint from {model_path}. "
+                    "The current meta-adversarial network expects the late-fusion "
+                    "target-vector layers, so checkpoints created before this "
+                    "upgrade are not architecture-compatible."
+                ) from exc
+            raise
         self.network.to(self.device)
         self.network.eval()

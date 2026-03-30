@@ -133,10 +133,20 @@ def get_progress_value(env) -> float:
     _refresh_progress_state(env)
     finish_target = float(getattr(env.unwrapped, "_finish_target_progress", 0.0))
     progress = float(getattr(env.unwrapped, "_unwrapped_progress", 0.0))
-    if finish_target <= 0.0:
-        return 0.0
-    normalized = float(np.clip(progress / finish_target, 0.0, 1.0))
-    return 2.0 * normalized - 1.0
+    if finish_target > 0.0:
+        normalized = float(np.clip(progress / finish_target, 0.0, 1.0))
+        return 2.0 * normalized - 1.0
+
+    distance_fn = getattr(env.unwrapped, "_distance_travelled", None)
+    required_distance = getattr(env.unwrapped, "_required_success_distance", None)
+    if callable(distance_fn) and required_distance is not None:
+        required_distance = float(required_distance)
+        if required_distance > 0.0:
+            normalized = float(
+                np.clip(float(distance_fn()) / required_distance, 0.0, 1.0)
+            )
+            return 2.0 * normalized - 1.0
+    return 0.0
 
 
 def resolve_speed_bounds(vehicle) -> tuple[float, float]:
@@ -161,6 +171,77 @@ def normalize_speed(vehicle) -> float:
     return float(np.clip(normalized, -1.0, 1.0))
 
 
+def _collision_partners(vehicle) -> tuple[Any, ...]:
+    partners = getattr(vehicle, "collision_partners", ())
+    if partners is None:
+        return ()
+    return tuple(partners)
+
+
+def _collided_with(vehicle, other) -> bool:
+    return any(partner is other for partner in _collision_partners(vehicle))
+
+
+def _is_intersecting(vehicle, other) -> bool:
+    is_colliding = getattr(vehicle, "_is_colliding", None)
+    if not callable(is_colliding):
+        return False
+
+    try:
+        intersecting, _, _ = is_colliding(other, 0.0)
+    except TypeError:
+        try:
+            intersecting, _, _ = is_colliding(other)
+        except Exception:
+            return False
+    except Exception:
+        return False
+    return bool(intersecting)
+
+
+def _vehicles_collided_together(ego_vehicle, npc_vehicle) -> bool:
+    return (
+        _collided_with(ego_vehicle, npc_vehicle)
+        or _collided_with(npc_vehicle, ego_vehicle)
+        or _is_intersecting(ego_vehicle, npc_vehicle)
+    )
+
+
+def _classify_collision_outcome(ego_vehicle, npc_vehicle) -> TerminalOutcome | None:
+    ego_crashed = bool(getattr(ego_vehicle, "crashed", False))
+    npc_crashed = bool(getattr(npc_vehicle, "crashed", False))
+
+    if not ego_crashed and not npc_crashed:
+        return None
+
+    if ego_crashed and npc_crashed and _vehicles_collided_together(ego_vehicle, npc_vehicle):
+        return TerminalOutcome(True, -1.0, 1.0, "npc_hit_ego")
+
+    if ego_crashed and npc_crashed:
+        return TerminalOutcome(True, -1.0, -1.0, "double_self_collision")
+
+    if ego_crashed:
+        return TerminalOutcome(True, -1.0, 0.0, "ego_self_collision")
+
+    return TerminalOutcome(True, 0.0, -1.0, "npc_self_collision")
+
+
+def _classify_offroad_outcome(ego_vehicle, npc_vehicle) -> TerminalOutcome | None:
+    ego_on_road = bool(getattr(ego_vehicle, "on_road", True))
+    npc_on_road = bool(getattr(npc_vehicle, "on_road", True))
+
+    if ego_on_road and npc_on_road:
+        return None
+
+    if not ego_on_road and not npc_on_road:
+        return TerminalOutcome(True, -1.0, -1.0, "double_offroad")
+
+    if not ego_on_road:
+        return TerminalOutcome(True, -1.0, 0.0, "ego_offroad")
+
+    return TerminalOutcome(True, 0.0, -1.0, "npc_offroad")
+
+
 def classify_terminal_state(env, zero_sum_config: ZeroSumConfig) -> TerminalOutcome:
     ego_vehicle, npc_vehicle = get_controlled_vehicles(env)
 
@@ -169,25 +250,19 @@ def classify_terminal_state(env, zero_sum_config: ZeroSumConfig) -> TerminalOutc
     truncated = bool(env.unwrapped._is_truncated())
     terminated = bool(env.unwrapped._is_terminated())
 
-    ego_crashed = bool(getattr(ego_vehicle, "crashed", False))
-    npc_crashed = bool(getattr(npc_vehicle, "crashed", False))
     ego_on_road = bool(getattr(ego_vehicle, "on_road", True))
-    npc_on_road = bool(getattr(npc_vehicle, "on_road", True))
+    ego_crashed = bool(getattr(ego_vehicle, "crashed", False))
 
     if ego_success and ego_on_road and not ego_crashed:
         return TerminalOutcome(True, 1.0, -1.0, "ego_finished")
 
-    if ego_crashed:
-        return TerminalOutcome(True, -1.0, 1.0, "ego_collision")
+    collision_outcome = _classify_collision_outcome(ego_vehicle, npc_vehicle)
+    if collision_outcome is not None:
+        return collision_outcome
 
-    if npc_crashed:
-        return TerminalOutcome(True, 0.0, 0.0, "npc_self_collision")
-
-    if terminated and not ego_on_road:
-        return TerminalOutcome(True, 0.0, 0.0, "ego_offroad_draw")
-
-    if terminated and not npc_on_road:
-        return TerminalOutcome(True, 0.0, 0.0, "npc_offroad_draw")
+    offroad_outcome = _classify_offroad_outcome(ego_vehicle, npc_vehicle)
+    if offroad_outcome is not None:
+        return offroad_outcome
 
     if truncated:
         ego_speed = float(getattr(ego_vehicle, "speed", 0.0))

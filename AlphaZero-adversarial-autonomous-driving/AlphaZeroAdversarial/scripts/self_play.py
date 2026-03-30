@@ -40,6 +40,8 @@ def main():
         n_action_axis_1=config.n_action_axis_1,
         channels=config.network_channels,
         dropout_p=config.network_dropout_p,
+        target_vector_dim=config.target_vector_dim,
+        target_hidden_dim=config.target_hidden_dim,
     )
     trainer = AdversarialAlphaZeroTrainer(
         network=network,

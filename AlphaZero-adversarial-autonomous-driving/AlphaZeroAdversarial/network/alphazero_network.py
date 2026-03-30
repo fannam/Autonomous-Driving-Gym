@@ -13,6 +13,8 @@ class AlphaZeroNetwork(nn.Module):
         n_action_axis_1=None,
         channels=256,
         dropout_p=0.1,
+        target_vector_dim=0,
+        target_hidden_dim=32,
     ):
         super().__init__()
         if len(input_shape) != 3:
@@ -58,6 +60,8 @@ class AlphaZeroNetwork(nn.Module):
         self.channels = int(channels)
         self.dropout_p = float(dropout_p)
         self.board_area = int(input_shape[0] * input_shape[1])
+        self.target_vector_dim = int(target_vector_dim)
+        self.target_hidden_dim = int(target_hidden_dim)
         self.activation = nn.SiLU(inplace=True)
 
         self.conv_layer = nn.Conv2d(input_shape[2], self.channels, kernel_size=3, padding=1)
@@ -78,8 +82,20 @@ class AlphaZeroNetwork(nn.Module):
 
         self.shared_head_conv = nn.Conv2d(self.channels, 4, kernel_size=1)
         self.shared_head_bn = nn.BatchNorm2d(4)
-        self.shared_head_fc = nn.Linear(self.board_area * 4, 1024)
-        self.shared_head_dropout = nn.Dropout(self.dropout_p)
+        self.spatial_fc = nn.Linear(self.board_area * 4, 1024)
+        self.spatial_dropout = nn.Dropout(self.dropout_p)
+
+        if self.target_vector_dim > 0:
+            self.target_fc1 = nn.Linear(self.target_vector_dim, self.target_hidden_dim)
+            self.target_fc2 = nn.Linear(self.target_hidden_dim, self.target_hidden_dim)
+            fusion_input_dim = 1024 + self.target_hidden_dim
+        else:
+            self.target_fc1 = None
+            self.target_fc2 = None
+            fusion_input_dim = 1024
+
+        self.fusion_fc = nn.Linear(fusion_input_dim, 1024)
+        self.fusion_dropout = nn.Dropout(self.dropout_p)
 
         self.accelerate_fc = nn.Linear(1024, self.n_action_axis_0)
         self.steering_fc = nn.Linear(1024, self.n_action_axis_1)
@@ -111,20 +127,50 @@ class AlphaZeroNetwork(nn.Module):
             x = self.activation(x)
         return x
 
-    def forward_heads(self, features):
-        shared = self.activation(self.shared_head_bn(self.shared_head_conv(features)))
-        shared = torch.flatten(shared, start_dim=1)
-        shared = self.activation(self.shared_head_fc(shared))
-        shared = self.shared_head_dropout(shared)
+    def forward_spatial_embedding(self, features):
+        spatial = self.activation(self.shared_head_bn(self.shared_head_conv(features)))
+        spatial = torch.flatten(spatial, start_dim=1)
+        spatial = self.activation(self.spatial_fc(spatial))
+        spatial = self.spatial_dropout(spatial)
+        return spatial
 
-        accelerate_logits = self.accelerate_fc(shared)
-        steering_logits = self.steering_fc(shared)
-        value = torch.tanh(self.value_fc(shared))
+    def forward_target_embedding(self, target_vector, *, batch_size, device, dtype):
+        if self.target_vector_dim <= 0:
+            return None
+        if target_vector is None:
+            target_vector = torch.zeros(
+                (batch_size, self.target_vector_dim),
+                device=device,
+                dtype=dtype,
+            )
+        target = self.activation(self.target_fc1(target_vector))
+        target = self.activation(self.target_fc2(target))
+        return target
+
+    def forward_heads(self, spatial_embedding, target_embedding):
+        fused = spatial_embedding
+        if target_embedding is not None:
+            fused = torch.cat((spatial_embedding, target_embedding), dim=1)
+        fused = self.activation(self.fusion_fc(fused))
+        fused = self.fusion_dropout(fused)
+        accelerate_logits = self.accelerate_fc(fused)
+        steering_logits = self.steering_fc(fused)
+        value = torch.tanh(self.value_fc(fused))
         return accelerate_logits, steering_logits, value
 
-    def forward(self, x, return_logits=False):
+    def forward(self, x, target_vector=None, return_logits=False):
         features = self.forward_features(x)
-        accelerate_logits, steering_logits, value = self.forward_heads(features)
+        spatial_embedding = self.forward_spatial_embedding(features)
+        target_embedding = self.forward_target_embedding(
+            target_vector,
+            batch_size=int(spatial_embedding.shape[0]),
+            device=spatial_embedding.device,
+            dtype=spatial_embedding.dtype,
+        )
+        accelerate_logits, steering_logits, value = self.forward_heads(
+            spatial_embedding,
+            target_embedding,
+        )
         if return_logits:
             return accelerate_logits, steering_logits, value
         return (

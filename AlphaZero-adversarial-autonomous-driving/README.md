@@ -5,7 +5,7 @@ This package is a second AlphaZero-style implementation for the repository, focu
 - Agent 0: ego vehicle that tries to survive and finish safely.
 - Agent 1: adversarial NPC that tries to force ego into a collision.
 - Search: simultaneous-move MCTS with decoupled PUCT statistics.
-- Model: one shared-weight network used from both viewpoints.
+- Model: one shared-weight late-fusion network used from both viewpoints.
 
 ## Layout
 
@@ -37,6 +37,28 @@ It configures:
 - `MultiAgentAction`
 - `MultiAgentObservation`
 - a local occupancy-grid observation used only for static road features
+- a role-aware target vector fused with the CNN embedding before the policy/value heads
+
+## Target Vector
+
+The racetrack adversarial model now uses late fusion:
+
+- CNN branch: local occupancy grid plus self/opponent history
+- Target-vector branch: low-dimensional global guidance signal
+- Fusion: concatenate both embeddings before the shared factorized policy/value heads
+
+Target semantics are role-specific:
+
+- Ego target: a route waypoint projected forward along the active lane/route
+- NPC target: an ego intercept point computed from distance and relative speed
+
+The target vector is normalized into `[-1, 1]` and contains:
+
+- `dx, dy`: local-frame target displacement
+- `dvx, dvy`: local-frame relative target velocity
+- `sin(bearing), cos(bearing)`: heading-safe angular target cue
+- `role_bit`: `+1` for ego, `-1` for NPC
+- `target_type_bit`: `+1` for route-lookahead, `-1` for intercept
 
 ## Usage
 
@@ -48,7 +70,10 @@ python AlphaZeroAdversarial/scripts/evaluate.py --model-path models/alphazero_ad
 
 ## Notes
 
-- The adversarial game is zero-sum at the payoff level, even though the environment itself is not.
-- Ego collision is treated as an NPC win.
+- Terminal payoffs distinguish direct NPC hits from self-inflicted failures.
+- Direct NPC-to-ego collisions are treated as NPC wins.
+- Ego self-collisions/off-road failures penalize ego without rewarding NPC.
+- NPC self-collisions/off-road failures penalize NPC without rewarding ego.
 - Ego timeout while still safe and above the configured minimum speed is treated as an ego win.
-- Off-road violations and NPC self-destruction are mapped to draws to reduce reward hacking.
+- Self-play shards now store `target_vectors` alongside `states`, factorized policy targets, and `values`.
+- Checkpoints created before the late-fusion target-vector upgrade are not compatible with the current network state dict.

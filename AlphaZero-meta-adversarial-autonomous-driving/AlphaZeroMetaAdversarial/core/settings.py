@@ -115,6 +115,31 @@ class PerspectiveTensorConfig:
     include_heading_planes: bool = True
     include_progress_plane: bool = True
     flip_npc_perspective: bool = True
+    use_target_vector: bool = True
+    target_position_scale: float = 50.0
+    target_velocity_scale: float = 40.0
+    route_lookahead_base: float = 20.0
+    route_lookahead_speed_gain: float = 0.5
+    route_lookahead_min: float = 10.0
+    route_lookahead_max: float = 60.0
+    npc_intercept_speed_floor: float = 5.0
+    npc_intercept_tau_max: float = 3.0
+    include_role_bit: bool = True
+    include_target_type_bit: bool = True
+
+    def __post_init__(self) -> None:
+        if float(self.target_position_scale) <= 0.0:
+            raise ValueError("target_position_scale must be positive.")
+        if float(self.target_velocity_scale) <= 0.0:
+            raise ValueError("target_velocity_scale must be positive.")
+        if float(self.route_lookahead_min) <= 0.0:
+            raise ValueError("route_lookahead_min must be positive.")
+        if float(self.route_lookahead_max) < float(self.route_lookahead_min):
+            raise ValueError("route_lookahead_max must be >= route_lookahead_min.")
+        if float(self.npc_intercept_speed_floor) <= 0.0:
+            raise ValueError("npc_intercept_speed_floor must be positive.")
+        if float(self.npc_intercept_tau_max) < 0.0:
+            raise ValueError("npc_intercept_tau_max must be non-negative.")
 
     @classmethod
     def from_dict(
@@ -175,6 +200,15 @@ class PerspectiveTensorConfig:
         width, height = self.grid_shape
         return (width, height, self.plane_count)
 
+    @property
+    def target_vector_dim(self) -> int:
+        if not self.use_target_vector:
+            return 0
+        base_dim = 6
+        base_dim += int(self.include_role_bit)
+        base_dim += int(self.include_target_type_bit)
+        return base_dim
+
 
 @dataclass(frozen=True)
 class ZeroSumConfig:
@@ -193,6 +227,7 @@ class AdversarialAlphaZeroConfig:
     n_residual_layers: int = 10
     network_channels: int = 256
     network_dropout_p: float = 0.1
+    target_hidden_dim: int = 32
     c_puct: float = 2.5
     n_simulations: int = 24
     temperature: float = 1.0
@@ -214,6 +249,8 @@ class AdversarialAlphaZeroConfig:
     def __post_init__(self) -> None:
         if int(self.n_actions) <= 0:
             raise ValueError("n_actions must be a positive integer.")
+        if int(self.target_hidden_dim) <= 0:
+            raise ValueError("target_hidden_dim must be a positive integer.")
 
         if (
             self.relative_pruning_gamma is not None
@@ -264,6 +301,10 @@ class AdversarialAlphaZeroConfig:
     @property
     def input_shape(self) -> tuple[int, int, int]:
         return self.tensor.network_input_shape
+
+    @property
+    def target_vector_dim(self) -> int:
+        return self.tensor.target_vector_dim
 
 
 def load_stage_config(

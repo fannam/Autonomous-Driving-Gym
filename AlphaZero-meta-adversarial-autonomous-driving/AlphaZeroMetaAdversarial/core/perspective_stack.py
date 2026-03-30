@@ -92,6 +92,17 @@ class PerspectiveTensorBuilder:
         )
         return np.stack((ego_tensor, npc_tensor), axis=0)
 
+    def build_target_vector_batch(self, env) -> np.ndarray:
+        if not self.config.use_target_vector:
+            return np.zeros((2, 0), dtype=np.float32)
+        return np.stack(
+            (
+                self.build_target_vector(env=env, agent_index=0),
+                self.build_target_vector(env=env, agent_index=1),
+            ),
+            axis=0,
+        )
+
     def build_agent_tensor(
         self,
         env,
@@ -153,6 +164,53 @@ class PerspectiveTensorBuilder:
                 f"Expected {self.config.plane_count} channels, built {channel_offset}."
             )
         return tensor
+
+    def build_target_vector(
+        self,
+        env,
+        agent_index: int,
+    ) -> np.ndarray:
+        ego_vehicle, npc_vehicle = env.unwrapped.controlled_vehicles[:2]
+        self_vehicle = ego_vehicle if agent_index == 0 else npc_vehicle
+        mirror_y = bool(agent_index == 1 and self.config.flip_npc_perspective)
+
+        if agent_index == 0:
+            target_position, target_velocity = self._resolve_route_target(self_vehicle)
+            role_bit = 1.0
+            target_type_bit = 1.0
+        else:
+            target_position, target_velocity = self._resolve_intercept_target(
+                self_vehicle=self_vehicle,
+                target_vehicle=ego_vehicle,
+            )
+            role_bit = -1.0
+            target_type_bit = -1.0
+
+        local_dx, local_dy = self._world_delta_to_local(
+            delta=target_position - np.asarray(self_vehicle.position, dtype=np.float32),
+            observer_heading=float(getattr(self_vehicle, "heading", 0.0)),
+            mirror_y=mirror_y,
+        )
+        local_dvx, local_dvy = self._world_delta_to_local(
+            delta=target_velocity - np.asarray(self_vehicle.velocity, dtype=np.float32),
+            observer_heading=float(getattr(self_vehicle, "heading", 0.0)),
+            mirror_y=mirror_y,
+        )
+        bearing = float(np.arctan2(local_dy, local_dx)) if (local_dx or local_dy) else 0.0
+
+        vector_values = [
+            self._normalize_signed(local_dx, self.config.target_position_scale),
+            self._normalize_signed(local_dy, self.config.target_position_scale),
+            self._normalize_signed(local_dvx, self.config.target_velocity_scale),
+            self._normalize_signed(local_dvy, self.config.target_velocity_scale),
+            float(np.sin(bearing)),
+            float(np.cos(bearing)),
+        ]
+        if self.config.include_role_bit:
+            vector_values.append(role_bit)
+        if self.config.include_target_type_bit:
+            vector_values.append(target_type_bit)
+        return np.asarray(vector_values, dtype=np.float32)
 
     def _fill_history_block(
         self,
@@ -221,6 +279,99 @@ class PerspectiveTensorBuilder:
 
         return channel_offset
 
+    @staticmethod
+    def _normalize_signed(value: float, scale: float) -> float:
+        return float(np.tanh(float(value) / max(float(scale), 1e-6)))
+
+    @staticmethod
+    def _velocity_vector(vehicle) -> np.ndarray:
+        return np.asarray(getattr(vehicle, "velocity", np.zeros(2)), dtype=np.float32)
+
+    def _resolve_route_target(self, vehicle) -> tuple[np.ndarray, np.ndarray]:
+        lookahead_distance = float(
+            np.clip(
+                self.config.route_lookahead_base
+                + self.config.route_lookahead_speed_gain * abs(float(getattr(vehicle, "speed", 0.0))),
+                self.config.route_lookahead_min,
+                self.config.route_lookahead_max,
+            )
+        )
+
+        lane_index = getattr(vehicle, "target_lane_index", None) or getattr(vehicle, "lane_index", None)
+        road = getattr(vehicle, "road", None)
+        if road is None or lane_index is None:
+            heading = float(getattr(vehicle, "heading", 0.0))
+            target_position = np.asarray(vehicle.position, dtype=np.float32) + lookahead_distance * np.asarray(
+                [np.cos(heading), np.sin(heading)],
+                dtype=np.float32,
+            )
+            target_speed = float(getattr(vehicle, "target_speed", getattr(vehicle, "speed", 0.0)))
+            target_velocity = target_speed * np.asarray([np.cos(heading), np.sin(heading)], dtype=np.float32)
+            return target_position, target_velocity
+
+        lane = road.network.get_lane(lane_index)
+        longitudinal, _ = lane.local_coordinates(np.asarray(vehicle.position, dtype=np.float32))
+        target_longitudinal = float(longitudinal) + lookahead_distance
+        route = list(getattr(vehicle, "route", None) or [lane_index])
+        if route:
+            target_position, target_heading = road.network.position_heading_along_route(
+                route,
+                target_longitudinal,
+                0.0,
+                current_lane_index=lane_index,
+            )
+        else:
+            target_position = lane.position(target_longitudinal, 0.0)
+            target_heading = lane.heading_at(target_longitudinal)
+
+        target_speed = float(getattr(vehicle, "target_speed", getattr(vehicle, "speed", 0.0)))
+        target_velocity = target_speed * np.asarray(
+            [np.cos(target_heading), np.sin(target_heading)],
+            dtype=np.float32,
+        )
+        return np.asarray(target_position, dtype=np.float32), target_velocity
+
+    def _resolve_intercept_target(
+        self,
+        *,
+        self_vehicle,
+        target_vehicle,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        self_position = np.asarray(self_vehicle.position, dtype=np.float32)
+        target_position = np.asarray(target_vehicle.position, dtype=np.float32)
+        target_velocity = self._velocity_vector(target_vehicle)
+        relative_position = target_position - self_position
+        relative_velocity = target_velocity - self._velocity_vector(self_vehicle)
+
+        distance = float(np.linalg.norm(relative_position))
+        relative_speed = max(
+            float(self.config.npc_intercept_speed_floor),
+            float(np.linalg.norm(relative_velocity)),
+        )
+        tau = float(
+            np.clip(
+                distance / max(relative_speed, 1e-6),
+                0.0,
+                float(self.config.npc_intercept_tau_max),
+            )
+        )
+        intercept_position = target_position + tau * target_velocity
+        return intercept_position.astype(np.float32), target_velocity
+
+    @staticmethod
+    def _world_delta_to_local(
+        delta: np.ndarray,
+        observer_heading: float,
+        mirror_y: bool,
+    ) -> tuple[float, float]:
+        cos_h = float(np.cos(observer_heading))
+        sin_h = float(np.sin(observer_heading))
+        local_x = cos_h * float(delta[0]) + sin_h * float(delta[1])
+        local_y = -sin_h * float(delta[0]) + cos_h * float(delta[1])
+        if mirror_y:
+            local_y = -local_y
+        return local_x, local_y
+
     def _world_to_grid_indices(
         self,
         target_position: np.ndarray,
@@ -228,13 +379,11 @@ class PerspectiveTensorBuilder:
         observer_heading: float,
         mirror_y: bool,
     ) -> tuple[int, int] | None:
-        delta = target_position - observer_position
-        cos_h = float(np.cos(observer_heading))
-        sin_h = float(np.sin(observer_heading))
-        local_x = cos_h * float(delta[0]) + sin_h * float(delta[1])
-        local_y = -sin_h * float(delta[0]) + cos_h * float(delta[1])
-        if mirror_y:
-            local_y = -local_y
+        local_x, local_y = self._world_delta_to_local(
+            delta=target_position - observer_position,
+            observer_heading=observer_heading,
+            mirror_y=mirror_y,
+        )
 
         (x_min, x_max), (y_min, y_max) = self.config.grid_extent
         if not (x_min <= local_x < x_max and y_min <= local_y < y_max):

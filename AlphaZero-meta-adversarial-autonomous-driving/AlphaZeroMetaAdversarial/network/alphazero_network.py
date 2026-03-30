@@ -11,6 +11,8 @@ class AlphaZeroNetwork(nn.Module):
         n_actions=5,
         channels=256,
         dropout_p=0.1,
+        target_vector_dim=0,
+        target_hidden_dim=32,
     ):
         super().__init__()
         if len(input_shape) != 3:
@@ -23,9 +25,13 @@ class AlphaZeroNetwork(nn.Module):
         self.channels = int(channels)
         self.dropout_p = float(dropout_p)
         self.board_area = int(input_shape[0] * input_shape[1])
+        self.target_vector_dim = int(target_vector_dim)
+        self.target_hidden_dim = int(target_hidden_dim)
         self.activation = nn.SiLU(inplace=True)
 
-        self.conv_layer = nn.Conv2d(input_shape[2], self.channels, kernel_size=3, padding=1)
+        self.conv_layer = nn.Conv2d(
+            input_shape[2], self.channels, kernel_size=3, padding=1
+        )
         self.batch_norm = nn.BatchNorm2d(self.channels)
 
         self.residual_layers = nn.ModuleList(
@@ -41,23 +47,33 @@ class AlphaZeroNetwork(nn.Module):
             ]
         )
 
-        self.value_conv = nn.Conv2d(self.channels, 1, kernel_size=1)
-        self.value_bn = nn.BatchNorm2d(1)
-        self.value_fc1 = nn.Linear(self.board_area, 256)
-        self.value_dropout = nn.Dropout(self.dropout_p)
-        self.value_fc2 = nn.Linear(256, 1)
+        self.spatial_conv = nn.Conv2d(self.channels, 4, kernel_size=1)
+        self.spatial_bn = nn.BatchNorm2d(4)
+        self.spatial_fc = nn.Linear(self.board_area * 4, 256)
+        self.spatial_dropout = nn.Dropout(self.dropout_p)
 
-        self.policy_conv = nn.Conv2d(self.channels, 2, kernel_size=1)
-        self.policy_bn = nn.BatchNorm2d(2)
-        self.policy_fc = nn.Linear(self.board_area * 2, self.n_actions)
-        self.policy_dropout = nn.Dropout(self.dropout_p)
+        if self.target_vector_dim > 0:
+            self.target_fc1 = nn.Linear(self.target_vector_dim, self.target_hidden_dim)
+            self.target_fc2 = nn.Linear(self.target_hidden_dim, self.target_hidden_dim)
+            fusion_input_dim = 256 + self.target_hidden_dim
+        else:
+            self.target_fc1 = None
+            self.target_fc2 = None
+            fusion_input_dim = 256
+
+        self.fusion_fc = nn.Linear(fusion_input_dim, 256)
+        self.fusion_dropout = nn.Dropout(self.dropout_p)
+        self.policy_fc = nn.Linear(256, self.n_actions)
+        self.value_fc = nn.Linear(256, 1)
 
         self._initialize_weights()
 
     def _initialize_weights(self):
         for module in self.modules():
             if isinstance(module, nn.Conv2d):
-                nn.init.kaiming_normal_(module.weight, mode="fan_out", nonlinearity="relu")
+                nn.init.kaiming_normal_(
+                    module.weight, mode="fan_out", nonlinearity="relu"
+                )
                 if module.bias is not None:
                     nn.init.zeros_(module.bias)
             elif isinstance(module, nn.Linear):
@@ -78,22 +94,46 @@ class AlphaZeroNetwork(nn.Module):
             x = self.activation(x)
         return x
 
-    def forward_heads(self, features):
-        value = self.activation(self.value_bn(self.value_conv(features)))
-        value = torch.flatten(value, start_dim=1)
-        value = self.activation(self.value_fc1(value))
-        value = self.value_dropout(value)
-        value = torch.tanh(self.value_fc2(value))
+    def forward_spatial_embedding(self, features):
+        spatial = self.activation(self.spatial_bn(self.spatial_conv(features)))
+        spatial = torch.flatten(spatial, start_dim=1)
+        spatial = self.activation(self.spatial_fc(spatial))
+        spatial = self.spatial_dropout(spatial)
+        return spatial
 
-        policy = self.activation(self.policy_bn(self.policy_conv(features)))
-        policy = torch.flatten(policy, start_dim=1)
-        policy = self.policy_dropout(policy)
-        policy_logits = self.policy_fc(policy)
+    def forward_target_embedding(self, target_vector, *, batch_size, device, dtype):
+        if self.target_vector_dim <= 0:
+            return None
+        if target_vector is None:
+            target_vector = torch.zeros(
+                (batch_size, self.target_vector_dim),
+                device=device,
+                dtype=dtype,
+            )
+        target = self.activation(self.target_fc1(target_vector))
+        target = self.activation(self.target_fc2(target))
+        return target
+
+    def forward_heads(self, spatial_embedding, target_embedding):
+        fused = spatial_embedding
+        if target_embedding is not None:
+            fused = torch.cat((spatial_embedding, target_embedding), dim=1)
+        fused = self.activation(self.fusion_fc(fused))
+        fused = self.fusion_dropout(fused)
+        policy_logits = self.policy_fc(fused)
+        value = torch.tanh(self.value_fc(fused))
         return policy_logits, value
 
-    def forward(self, x, return_logits=False):
+    def forward(self, x, target_vector=None, return_logits=False):
         features = self.forward_features(x)
-        policy_logits, value = self.forward_heads(features)
+        spatial_embedding = self.forward_spatial_embedding(features)
+        target_embedding = self.forward_target_embedding(
+            target_vector,
+            batch_size=int(spatial_embedding.shape[0]),
+            device=spatial_embedding.device,
+            dtype=spatial_embedding.dtype,
+        )
+        policy_logits, value = self.forward_heads(spatial_embedding, target_embedding)
         if return_logits:
             return policy_logits, value
         return F.softmax(policy_logits, dim=1), value

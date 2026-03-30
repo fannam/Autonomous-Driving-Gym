@@ -169,20 +169,25 @@ def _resolve_self_play_env_spec(args: argparse.Namespace):
     )
 
 
-def _serialize_examples(examples: list[tuple[np.ndarray, np.ndarray, float]]):
+def _serialize_examples(examples: list[tuple[np.ndarray, np.ndarray, np.ndarray, float]]):
     if not examples:
         return (
             torch.empty((0, 0, 0, 0), dtype=torch.float32),
             torch.empty((0, 0), dtype=torch.float32),
+            torch.empty((0, 0), dtype=torch.float32),
             torch.empty((0, 1), dtype=torch.float32),
         )
 
-    states, policies, values = zip(*examples)
+    states, target_vectors, policies, values = zip(*examples)
     state_tensor = torch.from_numpy(np.stack(states, axis=0)).to(dtype=torch.float32)
+    target_vector_tensor = torch.from_numpy(np.stack(target_vectors, axis=0)).to(
+        dtype=torch.float32
+    )
     policy_tensor = torch.from_numpy(np.stack(policies, axis=0)).to(dtype=torch.float32)
     value_tensor = torch.tensor(values, dtype=torch.float32).unsqueeze(1)
     return (
         state_tensor,
+        target_vector_tensor,
         policy_tensor,
         value_tensor,
     )
@@ -190,7 +195,7 @@ def _serialize_examples(examples: list[tuple[np.ndarray, np.ndarray, float]]):
 
 def _flush_shard(
     *,
-    shard_examples: list[tuple[np.ndarray, np.ndarray, float]],
+    shard_examples: list[tuple[np.ndarray, np.ndarray, np.ndarray, float]],
     shard_episode_summaries: list[dict],
     worker_id: int,
     shard_index: int,
@@ -199,7 +204,7 @@ def _flush_shard(
     if not shard_examples:
         return None
 
-    states, policies, values = _serialize_examples(shard_examples)
+    states, target_vectors, policies, values = _serialize_examples(shard_examples)
     shard_path = output_dir / f"worker_{worker_id:02d}_shard_{shard_index:03d}.pt"
     torch.save(
         {
@@ -209,6 +214,7 @@ def _flush_shard(
             "episode_count": len(shard_episode_summaries),
             "policy_format": "flat_meta",
             "states": states,
+            "target_vectors": target_vectors,
             "policies": policies,
             "values": values,
             "episodes": shard_episode_summaries,
@@ -257,6 +263,8 @@ def _run_worker(task: dict) -> dict:
         n_actions=int(task["n_actions"]),
         channels=int(task["network_channels"]),
         dropout_p=float(task["network_dropout_p"]),
+        target_vector_dim=int(task["target_vector_dim"]),
+        target_hidden_dim=int(task["target_hidden_dim"]),
     )
     network.load_state_dict(
         torch.load(task["model_path"], map_location=torch.device("cpu"))
@@ -278,7 +286,7 @@ def _run_worker(task: dict) -> dict:
         max_steps_per_episode = int(max_steps_per_episode)
     episodes_per_shard = int(task["episodes_per_shard"])
 
-    shard_examples: list[tuple[np.ndarray, np.ndarray, float]] = []
+    shard_examples: list[tuple[np.ndarray, np.ndarray, np.ndarray, float]] = []
     shard_episode_summaries: list[dict] = []
     shard_manifests: list[dict] = []
     shard_index = 0
@@ -470,6 +478,8 @@ def main() -> int:
             n_actions=config.n_actions,
             channels=config.network_channels,
             dropout_p=config.network_dropout_p,
+            target_vector_dim=config.target_vector_dim,
+            target_hidden_dim=config.target_hidden_dim,
         )
         model_path = output_dir / "_initial_model_for_kaggle_parallel_self_play.pth"
         torch.save(network.state_dict(), model_path)
@@ -530,6 +540,8 @@ def main() -> int:
             "n_residual_layers": int(config.n_residual_layers),
             "network_channels": int(config.network_channels),
             "network_dropout_p": float(config.network_dropout_p),
+            "target_vector_dim": int(config.target_vector_dim),
+            "target_hidden_dim": int(config.target_hidden_dim),
             "config": config,
             "reuse_tree_between_steps": not bool(args.no_reuse_tree_between_steps),
             "add_root_dirichlet_noise": True,

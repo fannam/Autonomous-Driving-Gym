@@ -63,6 +63,11 @@ class RoadObject(ABC):
         self.crashed = False
         self.hit = False
         self.impact = np.zeros(self.position.shape)
+        self.collision_partners: list[RoadObject] = []
+
+    def _register_collision_partner(self, other: RoadObject) -> None:
+        if all(partner is not other for partner in self.collision_partners):
+            self.collision_partners.append(other)
 
     @classmethod
     def make_on_lane(
@@ -110,6 +115,8 @@ class RoadObject(ABC):
                     self.impact = transition / 2
                     other.impact = -transition / 2
         if intersecting:
+            self._register_collision_partner(other)
+            other._register_collision_partner(self)
             if self.solid and other.solid:
                 self.crashed = True
                 other.crashed = True

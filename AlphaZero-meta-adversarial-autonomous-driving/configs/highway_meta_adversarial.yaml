@@ -55,7 +55,18 @@
         "include_self_speed_plane": true,
         "include_heading_planes": true,
         "include_progress_plane": true,
-        "flip_npc_perspective": true
+        "flip_npc_perspective": true,
+        "use_target_vector": true,
+        "target_position_scale": 50.0,
+        "target_velocity_scale": 40.0,
+        "route_lookahead_base": 20.0,
+        "route_lookahead_speed_gain": 0.5,
+        "route_lookahead_min": 10.0,
+        "route_lookahead_max": 60.0,
+        "npc_intercept_speed_floor": 5.0,
+        "npc_intercept_tau_max": 3.0,
+        "include_role_bit": true,
+        "include_target_type_bit": true
       },
       "zero_sum": {
         "minimum_safe_speed": 5.0
@@ -64,6 +75,7 @@
       "n_residual_layers": 10,
       "network_channels": 256,
       "network_dropout_p": 0.1,
+      "target_hidden_dim": 32,
       "c_puct": 1.0,
       "n_simulations": 250,
       "temperature": 1.0,
@@ -89,7 +101,18 @@
         "include_self_speed_plane": true,
         "include_heading_planes": true,
         "include_progress_plane": true,
-        "flip_npc_perspective": true
+        "flip_npc_perspective": true,
+        "use_target_vector": true,
+        "target_position_scale": 50.0,
+        "target_velocity_scale": 40.0,
+        "route_lookahead_base": 20.0,
+        "route_lookahead_speed_gain": 0.5,
+        "route_lookahead_min": 10.0,
+        "route_lookahead_max": 60.0,
+        "npc_intercept_speed_floor": 5.0,
+        "npc_intercept_tau_max": 3.0,
+        "include_role_bit": true,
+        "include_target_type_bit": true
       },
       "zero_sum": {
         "minimum_safe_speed": 5.0
@@ -98,6 +121,7 @@
       "n_residual_layers": 10,
       "network_channels": 256,
       "network_dropout_p": 0.0,
+      "target_hidden_dim": 32,
       "c_puct": 1.0,
       "n_simulations": 250,
       "temperature": 0.0,
@@ -123,7 +147,18 @@
         "include_self_speed_plane": true,
         "include_heading_planes": true,
         "include_progress_plane": true,
-        "flip_npc_perspective": true
+        "flip_npc_perspective": true,
+        "use_target_vector": true,
+        "target_position_scale": 50.0,
+        "target_velocity_scale": 40.0,
+        "route_lookahead_base": 20.0,
+        "route_lookahead_speed_gain": 0.5,
+        "route_lookahead_min": 10.0,
+        "route_lookahead_max": 60.0,
+        "npc_intercept_speed_floor": 5.0,
+        "npc_intercept_tau_max": 3.0,
+        "include_role_bit": true,
+        "include_target_type_bit": true
       },
       "zero_sum": {
         "minimum_safe_speed": 5.0
@@ -132,6 +167,7 @@
       "n_residual_layers": 10,
       "network_channels": 256,
       "network_dropout_p": 0.0,
+      "target_hidden_dim": 32,
       "c_puct": 1.0,
       "n_simulations": 250,
       "temperature": 0.0,

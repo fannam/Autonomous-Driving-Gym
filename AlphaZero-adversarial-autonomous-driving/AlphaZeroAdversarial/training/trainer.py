@@ -358,7 +358,9 @@ class AdversarialAlphaZeroTrainer:
         if add_root_dirichlet_noise is None:
             add_root_dirichlet_noise = self.add_root_dirichlet_noise
 
-        episode_samples: list[tuple[np.ndarray, np.ndarray, np.ndarray, int]] = []
+        episode_samples: list[
+            tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, int]
+        ] = []
         step_count = 0
         outcome = root_node.terminal_outcome
 
@@ -367,8 +369,9 @@ class AdversarialAlphaZeroTrainer:
                 root_node = self._build_root_node(policy_modes=policy_modes)
                 mcts = self._build_mcts(root_node)
 
-            root_node.ensure_perspective_batch(self.tensor_builder)
+            root_node.ensure_model_inputs(self.tensor_builder)
             state_batch = np.copy(root_node.cached_perspective_batch)
+            target_vector_batch = np.copy(root_node.cached_target_vector_batch)
 
             mcts.prepare_root(add_exploration_noise=bool(add_root_dirichlet_noise))
             mcts.reset_timing_stats()
@@ -405,6 +408,7 @@ class AdversarialAlphaZeroTrainer:
             episode_samples.append(
                 (
                     np.copy(state_batch[0]),
+                    np.copy(target_vector_batch[0]),
                     ego_accelerate_target,
                     ego_steering_target,
                     0,
@@ -414,6 +418,7 @@ class AdversarialAlphaZeroTrainer:
                 episode_samples.append(
                     (
                         np.copy(state_batch[1]),
+                        np.copy(target_vector_batch[1]),
                         npc_accelerate_target,
                         npc_steering_target,
                         1,
@@ -464,11 +469,12 @@ class AdversarialAlphaZeroTrainer:
         episode_examples = [
             (
                 state,
+                target_vector,
                 accelerate_target,
                 steering_target,
                 float(outcome.ego_value if agent_index == 0 else outcome.npc_value),
             )
-            for state, accelerate_target, steering_target, agent_index in episode_samples
+            for state, target_vector, accelerate_target, steering_target, agent_index in episode_samples
         ]
 
         if store_in_replay:
@@ -501,8 +507,18 @@ class AdversarialAlphaZeroTrainer:
     def _build_training_tensors(self):
         if not self.replay_buffer:
             raise ValueError("Replay buffer is empty; collect self-play data first.")
-        states, accelerate_policies, steering_policies, values = zip(*self.replay_buffer)
+        (
+            states,
+            target_vectors,
+            accelerate_policies,
+            steering_policies,
+            values,
+        ) = zip(*self.replay_buffer)
         state_tensor = torch.as_tensor(np.stack(states, axis=0), dtype=torch.float32)
+        target_vector_tensor = torch.as_tensor(
+            np.stack(target_vectors, axis=0),
+            dtype=torch.float32,
+        )
         accelerate_policy_tensor = torch.as_tensor(
             np.stack(accelerate_policies, axis=0),
             dtype=torch.float32,
@@ -512,17 +528,25 @@ class AdversarialAlphaZeroTrainer:
             dtype=torch.float32,
         )
         value_tensor = torch.as_tensor(np.asarray(values, dtype=np.float32)).unsqueeze(1)
-        return state_tensor, accelerate_policy_tensor, steering_policy_tensor, value_tensor
+        return (
+            state_tensor,
+            target_vector_tensor,
+            accelerate_policy_tensor,
+            steering_policy_tensor,
+            value_tensor,
+        )
 
     def train(self):
         (
             state_tensor,
+            target_vector_tensor,
             accelerate_policy_tensor,
             steering_policy_tensor,
             value_tensor,
         ) = self._build_training_tensors()
         dataset = TensorDataset(
             state_tensor,
+            target_vector_tensor,
             accelerate_policy_tensor,
             steering_policy_tensor,
             value_tensor,
@@ -543,8 +567,18 @@ class AdversarialAlphaZeroTrainer:
             epoch_value_loss_sum = 0.0
             sample_count = 0
 
-            for state_batch, accelerate_policy_batch, steering_policy_batch, value_batch in dataloader:
+            for (
+                state_batch,
+                target_vector_batch,
+                accelerate_policy_batch,
+                steering_policy_batch,
+                value_batch,
+            ) in dataloader:
                 state_batch = state_batch.to(self.device, non_blocking=self.device.type != "cpu")
+                target_vector_batch = target_vector_batch.to(
+                    self.device,
+                    non_blocking=self.device.type != "cpu",
+                )
                 accelerate_policy_batch = accelerate_policy_batch.to(
                     self.device,
                     non_blocking=self.device.type != "cpu",
@@ -557,6 +591,7 @@ class AdversarialAlphaZeroTrainer:
 
                 accelerate_logits, steering_logits, predicted_value = self.network(
                     state_batch,
+                    target_vector_batch,
                     return_logits=True,
                 )
                 accelerate_policy_loss = self._kl_policy_loss(

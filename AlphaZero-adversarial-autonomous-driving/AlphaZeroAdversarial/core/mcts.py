@@ -128,6 +128,7 @@ class SimultaneousMCTSNode:
 
         self.history = history
         self.cached_perspective_batch: np.ndarray | None = None
+        self.cached_target_vector_batch: np.ndarray | None = None
 
         if self.env is not None:
             self._refresh_from_env()
@@ -178,13 +179,17 @@ class SimultaneousMCTSNode:
             self.tensor_config.history_length,
         )
 
-    def ensure_perspective_batch(self, builder: PerspectiveTensorBuilder) -> None:
+    def ensure_model_inputs(self, builder: PerspectiveTensorBuilder) -> None:
         self.ensure_instantiated()
-        if self.cached_perspective_batch is not None:
-            return
-        if self.history is None:
-            raise RuntimeError("Node history must be initialized before building tensors.")
-        self.cached_perspective_batch = builder.build_batch(self.env, self.history)
+        if self.cached_perspective_batch is None:
+            if self.history is None:
+                raise RuntimeError("Node history must be initialized before building tensors.")
+            self.cached_perspective_batch = builder.build_batch(self.env, self.history)
+        if self.cached_target_vector_batch is None:
+            self.cached_target_vector_batch = builder.build_target_vector_batch(self.env)
+
+    def ensure_perspective_batch(self, builder: PerspectiveTensorBuilder) -> None:
+        self.ensure_model_inputs(builder)
 
     def is_leaf(self) -> bool:
         return not self.children
@@ -391,8 +396,13 @@ class SimultaneousMCTS:
         return node, depth
 
     def _predict(self, node: SimultaneousMCTSNode) -> tuple[dict[int, float], dict[int, float], float, float]:
-        node.ensure_perspective_batch(self._builder)
+        node.ensure_model_inputs(self._builder)
         batch = torch.from_numpy(node.cached_perspective_batch).to(
+            device=self._device,
+            dtype=torch.float32,
+            non_blocking=self._device.type != "cpu",
+        )
+        target_vector_batch = torch.from_numpy(node.cached_target_vector_batch).to(
             device=self._device,
             dtype=torch.float32,
             non_blocking=self._device.type != "cpu",
@@ -401,7 +411,10 @@ class SimultaneousMCTS:
             torch.cuda.synchronize(self._device)
         started_at = time.perf_counter()
         with torch.inference_mode():
-            accelerate_batch, steering_batch, value_batch = self._network(batch)
+            accelerate_batch, steering_batch, value_batch = self._network(
+                batch,
+                target_vector_batch,
+            )
         if self._device.type == "cuda":
             torch.cuda.synchronize(self._device)
         elapsed = time.perf_counter() - started_at
@@ -425,8 +438,8 @@ class SimultaneousMCTS:
 
         raw_ego_value = float(value_batch[0].item())
         raw_npc_value = float(value_batch[1].item())
-        ego_value = float(np.clip(0.5 * (raw_ego_value - raw_npc_value), -1.0, 1.0))
-        npc_value = -ego_value
+        ego_value = float(np.clip(raw_ego_value, -1.0, 1.0))
+        npc_value = float(np.clip(raw_npc_value, -1.0, 1.0))
         return ego_policy, npc_policy, ego_value, npc_value
 
     def _apply_dirichlet_noise(

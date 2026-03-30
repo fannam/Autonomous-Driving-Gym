@@ -58,12 +58,16 @@ def test_collision():
     v1.handle_collisions(v2)
 
     assert v1.crashed and v2.crashed
+    assert v2 in v1.collision_partners
+    assert v1 in v2.collision_partners
     # Collision between a vehicle and an obstacle
     v3 = Vehicle(road=r, position=[20, 0], speed=10)
     o = Obstacle(road=r, position=[23, 0])
     v3.handle_collisions(o)
 
     assert v3.crashed and o.crashed
+    assert o in v3.collision_partners
+    assert v3 in o.collision_partners
     # Collision between a vehicle and a landmark
     v4 = Vehicle(road=r, position=[40, 0], speed=10)
     l = Landmark(road=r, position=[43, 0])
@@ -71,3 +75,5 @@ def test_collision():
 
     assert v4.crashed is False
     assert l.hit
+    assert l in v4.collision_partners
+    assert v4 in l.collision_partners
