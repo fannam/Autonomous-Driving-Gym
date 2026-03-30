@@ -8,8 +8,8 @@ PYTHON_BIN="${PYTHON_BIN:-python}"
 INSTALL_DEPS="${INSTALL_DEPS:-1}"
 UPGRADE_PIP="${UPGRADE_PIP:-0}"
 
-export ALPHAZERO_ADVERSARIAL_SCENARIO="${ALPHAZERO_ADVERSARIAL_SCENARIO:-racetrack_adversarial}"
-export ALPHAZERO_ADVERSARIAL_CONFIG_PATH="${ALPHAZERO_ADVERSARIAL_CONFIG_PATH:-$REPO_ROOT/AlphaZero-adversarial-autonomous-driving/configs/racetrack_adversarial.yaml}"
+export ALPHAZERO_ADVERSARIAL_SCENARIO="${ALPHAZERO_ADVERSARIAL_SCENARIO:-highway_adversarial}"
+export ALPHAZERO_ADVERSARIAL_CONFIG_PATH="${ALPHAZERO_ADVERSARIAL_CONFIG_PATH:-$REPO_ROOT/AlphaZero-adversarial-autonomous-driving/configs/highway_adversarial.yaml}"
 export PYTHONPATH="$REPO_ROOT/highway-env:$REPO_ROOT/AlphaZero-adversarial-autonomous-driving${PYTHONPATH:+:$PYTHONPATH}"
 
 STAGE="${STAGE:-self_play}"
@@ -25,8 +25,8 @@ DURATION="${DURATION:-}"
 OTHER_VEHICLES="${OTHER_VEHICLES:-}"
 POLICY_FREQUENCY="${POLICY_FREQUENCY:-}"
 SIMULATION_FREQUENCY="${SIMULATION_FREQUENCY:-}"
-ENV_ID="${ENV_ID:-}"
-SCENARIO_NAME="${SCENARIO_NAME:-}"
+ENV_ID="${ENV_ID:-highway-v0}"
+SCENARIO_NAME="${SCENARIO_NAME:-highway_adversarial}"
 
 ensure_python_module() {
   local module_name="$1"
@@ -63,6 +63,7 @@ cmd=(
   "$PYTHON_BIN"
   AlphaZero-adversarial-autonomous-driving/AlphaZeroAdversarial/scripts/render_steps.py
   --stage "$STAGE"
+  --config-path "$ALPHAZERO_ADVERSARIAL_CONFIG_PATH"
   --env-seed "$ENV_SEED"
   --steps "$STEPS"
   --controlled-vehicles "$CONTROLLED_VEHICLES"
@@ -92,13 +93,8 @@ if [[ -n "$SIMULATION_FREQUENCY" ]]; then
   cmd+=(--simulation-frequency "$SIMULATION_FREQUENCY")
 fi
 
-if [[ -n "$ENV_ID" ]]; then
-  cmd+=(--env-id "$ENV_ID")
-fi
-
-if [[ -n "$SCENARIO_NAME" ]]; then
-  cmd+=(--scenario-name "$SCENARIO_NAME")
-fi
+cmd+=(--env-id "$ENV_ID")
+cmd+=(--scenario-name "$SCENARIO_NAME")
 
 cmd+=("$@")
 

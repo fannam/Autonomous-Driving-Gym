@@ -18,6 +18,7 @@ try:
         get_controlled_vehicles,
         resolve_scripted_action,
     )
+    from AlphaZeroAdversarial.core.runtime_config import resolve_scenario_config_path
     from AlphaZeroAdversarial.environment.config import build_env_spec, init_env
 except ModuleNotFoundError:
     package_root = Path(__file__).resolve().parents[1]
@@ -28,7 +29,14 @@ except ModuleNotFoundError:
         get_controlled_vehicles,
         resolve_scripted_action,
     )
+    from AlphaZeroAdversarial.core.runtime_config import resolve_scenario_config_path
     from AlphaZeroAdversarial.environment.config import build_env_spec, init_env
+
+
+DEFAULT_PACKAGE_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_HIGHWAY_CONFIG_PATH = (
+    DEFAULT_PACKAGE_ROOT / "configs" / "highway_adversarial.yaml"
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -39,8 +47,9 @@ def parse_args() -> argparse.Namespace:
         )
     )
     parser.add_argument("--stage", type=str, default="self_play")
-    parser.add_argument("--scenario-name", type=str, default=None)
-    parser.add_argument("--env-id", type=str, default=None)
+    parser.add_argument("--scenario-name", type=str, default="highway_adversarial")
+    parser.add_argument("--config-path", type=Path, default=DEFAULT_HIGHWAY_CONFIG_PATH)
+    parser.add_argument("--env-id", type=str, default="highway-v0")
     parser.add_argument("--env-seed", type=int, default=21)
     parser.add_argument("--steps", type=int, default=8)
     parser.add_argument("--controlled-vehicles", type=int, default=2)
@@ -54,6 +63,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--policy-frequency", type=int, default=None)
     parser.add_argument("--simulation-frequency", type=int, default=None)
     return parser.parse_args()
+
+
+def _resolve_runtime_config_path(args: argparse.Namespace) -> Path | None:
+    if args.config_path is not None:
+        return Path(args.config_path).expanduser().resolve()
+    if args.scenario_name:
+        return resolve_scenario_config_path(str(args.scenario_name))
+    return None
 
 
 def _build_env_overrides(args: argparse.Namespace) -> dict:
@@ -139,9 +156,11 @@ def main() -> int:
         raise ValueError("This adversarial renderer expects exactly 2 controlled vehicles.")
 
     env_overrides = _build_env_overrides(args)
+    config_path = _resolve_runtime_config_path(args)
     spec = build_env_spec(
         stage=args.stage,
         scenario_name=args.scenario_name,
+        config_path=config_path,
         env_name=args.env_id,
         render_mode=args.render_mode,
         env_config_overrides=env_overrides,
@@ -149,6 +168,7 @@ def main() -> int:
     print(
         "[render-steps] "
         f"scenario={spec.scenario_name} "
+        f"config_path={config_path} "
         f"env_id={spec.env_id} "
         f"render_mode={spec.render_mode} "
         f"controlled_vehicles={spec.config.get('controlled_vehicles')}"
@@ -160,6 +180,7 @@ def main() -> int:
         render_mode=args.render_mode,
         stage=args.stage,
         scenario_name=args.scenario_name,
+        config_path=config_path,
         env_config_overrides=env_overrides,
     )
     rng = np.random.default_rng(args.env_seed)

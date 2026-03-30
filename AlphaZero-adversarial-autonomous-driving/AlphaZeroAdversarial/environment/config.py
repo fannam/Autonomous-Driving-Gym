@@ -33,14 +33,16 @@ def build_env_spec(
     *,
     stage: str = "self_play",
     scenario_name: str | None = None,
+    config_path: str | Path | None = None,
     env_name: str | None = None,
     render_mode: str | None = None,
     env_config_overrides: dict | None = None,
 ) -> EnvironmentSpec:
-    resolved_scenario = scenario_name or get_active_scenario_name()
+    resolved_scenario = scenario_name or get_active_scenario_name(config_path=config_path)
     environment = get_environment_config(
         stage=stage,
         scenario_name=resolved_scenario,
+        config_path=config_path,
     )
     env_id = str(env_name or environment.get("env_id"))
     if not env_id:
@@ -77,11 +79,13 @@ class EnvironmentFactory:
         render_mode: str | None = None,
         stage: str = "self_play",
         scenario_name: str | None = None,
+        config_path: str | Path | None = None,
         env_config_overrides: dict | None = None,
     ):
         spec = build_env_spec(
             stage=stage,
             scenario_name=scenario_name,
+            config_path=config_path,
             env_name=env_name,
             render_mode=render_mode,
             env_config_overrides=env_config_overrides,
@@ -97,6 +101,7 @@ def init_env(
     render_mode: str | None = None,
     stage: str = "self_play",
     scenario_name: str | None = None,
+    config_path: str | Path | None = None,
     env_config_overrides: dict | None = None,
 ):
     return EnvironmentFactory.create(
@@ -105,5 +110,6 @@ def init_env(
         render_mode=render_mode,
         stage=stage,
         scenario_name=scenario_name,
+        config_path=config_path,
         env_config_overrides=env_config_overrides,
     )
