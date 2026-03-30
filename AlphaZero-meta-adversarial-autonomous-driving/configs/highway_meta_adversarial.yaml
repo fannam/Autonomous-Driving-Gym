@@ -33,7 +33,7 @@
       "left_lane_constraint": 0,
       "left_lane_reward": 0,
       "high_speed_reward": 0,
-      "vehicles_density": 1,
+      "vehicles_density": 1.5,
       "success_mode": "distance",
       "terminate_on_success": true,
       "success_max_steps": null,
@@ -41,7 +41,7 @@
       "success_speed_range_fraction": 0.75,
       "success_speed_max_fraction": 0.8,
       "controlled_vehicles": 2,
-      "vehicles_count": 0,
+      "vehicles_count": 20,
       "lanes_count": 4,
       "policy_frequency": 1,
       "duration": 40

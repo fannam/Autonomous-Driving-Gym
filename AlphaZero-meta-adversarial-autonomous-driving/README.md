@@ -41,10 +41,19 @@ It configures:
 
 ## Usage
 
+From the repo root:
+
 ```bash
-python AlphaZeroMetaAdversarial/scripts/self_play.py
-python AlphaZeroMetaAdversarial/scripts/train.py --iterations 3 --episodes-per-iteration 2
-python AlphaZeroMetaAdversarial/scripts/evaluate.py --model-path models/alphazero_meta_adversarial_highway.pth
+bash scripts/run_meta_adversarial_train.sh --iterations 3 --episodes-per-iteration 2
+python AlphaZero-meta-adversarial-autonomous-driving/AlphaZeroMetaAdversarial/scripts/evaluate.py --model-path AlphaZero-meta-adversarial-autonomous-driving/models/alphazero_meta_adversarial_highway.pth
+```
+
+`bash scripts/run_meta_adversarial_train.sh` is the main end-to-end entrypoint. It lives at the repo root, uses the `highway-env` source from this repo via local editable install and `PYTHONPATH`, and follows the same lightweight install style as the other repo bash scripts.
+
+If the current Python environment is already prepared, you can skip installs:
+
+```bash
+INSTALL_DEPS=0 bash scripts/run_meta_adversarial_train.sh --iterations 1 --episodes-per-iteration 1
 ```
 
 ## Notes
