@@ -18,6 +18,7 @@ from ..core.game import (
 )
 from ..core.mcts import SimultaneousMCTS, SimultaneousMCTSNode
 from ..core.perspective_stack import PerspectiveTensorBuilder
+from ..core.policy import marginalize_action_policy, policy_dict_to_array
 from ..core.settings import AdversarialAlphaZeroConfig
 
 
@@ -60,10 +61,10 @@ class AdversarialAlphaZeroTrainer:
         self.last_episode_summary: dict | None = None
 
     @staticmethod
-    def _soft_target_cross_entropy(policy_logits, policy_targets):
+    def _kl_policy_loss(policy_logits, policy_targets):
         normalized_targets = policy_targets / policy_targets.sum(dim=1, keepdim=True).clamp_min(1e-8)
         log_policy = F.log_softmax(policy_logits, dim=1)
-        return -(normalized_targets * log_policy).sum(dim=1).mean()
+        return F.kl_div(log_policy, normalized_targets, reduction="batchmean")
 
     def _require_env(self):
         if self.env is None:
@@ -112,6 +113,10 @@ class AdversarialAlphaZeroTrainer:
             root_dirichlet_alpha=self.config.root_dirichlet_alpha,
             root_exploration_fraction=self.config.root_exploration_fraction,
             max_expand_actions_per_agent=self.config.max_expand_actions_per_agent,
+            n_action_axis_0=self.config.n_action_axis_0,
+            n_action_axis_1=self.config.n_action_axis_1,
+            relative_pruning_gamma=self.config.relative_pruning_gamma,
+            flip_npc_steering=self.config.tensor.flip_npc_perspective,
         )
 
     def _run_rollouts(self, mcts: SimultaneousMCTS) -> int:
@@ -119,12 +124,52 @@ class AdversarialAlphaZeroTrainer:
             mcts.rollout()
         return int(self.config.n_simulations)
 
-    def _policy_dict_to_vector(self, policy_dict: dict[int, float]) -> np.ndarray:
-        vector = np.zeros(self.config.n_actions, dtype=np.float32)
-        for action, prob in policy_dict.items():
-            if 0 <= int(action) < self.config.n_actions:
-                vector[int(action)] = float(prob)
-        return vector
+    @staticmethod
+    def _normalize_axis_target(target: np.ndarray) -> np.ndarray:
+        normalized = np.asarray(target, dtype=np.float32).reshape(-1)
+        target_sum = float(np.sum(normalized))
+        if target_sum <= 0.0 or not np.isfinite(target_sum):
+            if normalized.shape[0] == 0:
+                return normalized
+            normalized = np.full_like(normalized, 1.0 / normalized.shape[0])
+            return normalized
+        normalized /= target_sum
+        return normalized
+
+    def _maybe_smooth_axis_target(self, target: np.ndarray) -> np.ndarray:
+        normalized = self._normalize_axis_target(target)
+        if (
+            not bool(self.config.use_policy_target_smoothing)
+            or normalized.shape[0] <= 1
+        ):
+            return normalized
+
+        sigma = float(self.config.policy_target_smoothing_sigma)
+        axis_positions = np.arange(normalized.shape[0], dtype=np.float32)
+        squared_distance = (axis_positions[:, None] - axis_positions[None, :]) ** 2
+        smoothing_kernel = np.exp(-0.5 * squared_distance / (sigma ** 2)).astype(np.float32)
+        smoothed = smoothing_kernel @ normalized
+        return self._normalize_axis_target(smoothed)
+
+    def _policy_dict_to_factorized_targets(
+        self,
+        policy_dict: dict[int, float],
+        *,
+        agent_index: int,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        flat_policy = policy_dict_to_array(policy_dict, self.config.n_actions)
+        accelerate_target, steering_target = marginalize_action_policy(
+            flat_policy,
+            n_action_axis_0=self.config.n_action_axis_0,
+            n_action_axis_1=self.config.n_action_axis_1,
+            flip_steering=bool(
+                agent_index == 1 and self.config.tensor.flip_npc_perspective
+            ),
+        )
+        return (
+            self._maybe_smooth_axis_target(accelerate_target),
+            self._maybe_smooth_axis_target(steering_target),
+        )
 
     @staticmethod
     def _sample_action(policy_dict: dict[int, float]) -> int:
@@ -313,7 +358,7 @@ class AdversarialAlphaZeroTrainer:
         if add_root_dirichlet_noise is None:
             add_root_dirichlet_noise = self.add_root_dirichlet_noise
 
-        episode_samples: list[tuple[np.ndarray, np.ndarray, int]] = []
+        episode_samples: list[tuple[np.ndarray, np.ndarray, np.ndarray, int]] = []
         step_count = 0
         outcome = root_node.terminal_outcome
 
@@ -348,13 +393,31 @@ class AdversarialAlphaZeroTrainer:
                 policy_modes=policy_modes,
                 root_node=root_node,
             )
+            ego_accelerate_target, ego_steering_target = self._policy_dict_to_factorized_targets(
+                ego_policy,
+                agent_index=0,
+            )
+            npc_accelerate_target, npc_steering_target = self._policy_dict_to_factorized_targets(
+                npc_policy,
+                agent_index=1,
+            )
 
             episode_samples.append(
-                (np.copy(state_batch[0]), self._policy_dict_to_vector(ego_policy), 0)
+                (
+                    np.copy(state_batch[0]),
+                    ego_accelerate_target,
+                    ego_steering_target,
+                    0,
+                )
             )
             if collect_npc_samples:
                 episode_samples.append(
-                    (np.copy(state_batch[1]), self._policy_dict_to_vector(npc_policy), 1)
+                    (
+                        np.copy(state_batch[1]),
+                        npc_accelerate_target,
+                        npc_steering_target,
+                        1,
+                    )
                 )
 
             choose_action = self._sample_action if sample_actions and temperature > 1e-8 else self._greedy_action
@@ -401,10 +464,11 @@ class AdversarialAlphaZeroTrainer:
         episode_examples = [
             (
                 state,
-                policy_vector,
+                accelerate_target,
+                steering_target,
                 float(outcome.ego_value if agent_index == 0 else outcome.npc_value),
             )
-            for state, policy_vector, agent_index in episode_samples
+            for state, accelerate_target, steering_target, agent_index in episode_samples
         ]
 
         if store_in_replay:
@@ -437,15 +501,32 @@ class AdversarialAlphaZeroTrainer:
     def _build_training_tensors(self):
         if not self.replay_buffer:
             raise ValueError("Replay buffer is empty; collect self-play data first.")
-        states, policies, values = zip(*self.replay_buffer)
+        states, accelerate_policies, steering_policies, values = zip(*self.replay_buffer)
         state_tensor = torch.as_tensor(np.stack(states, axis=0), dtype=torch.float32)
-        policy_tensor = torch.as_tensor(np.stack(policies, axis=0), dtype=torch.float32)
+        accelerate_policy_tensor = torch.as_tensor(
+            np.stack(accelerate_policies, axis=0),
+            dtype=torch.float32,
+        )
+        steering_policy_tensor = torch.as_tensor(
+            np.stack(steering_policies, axis=0),
+            dtype=torch.float32,
+        )
         value_tensor = torch.as_tensor(np.asarray(values, dtype=np.float32)).unsqueeze(1)
-        return state_tensor, policy_tensor, value_tensor
+        return state_tensor, accelerate_policy_tensor, steering_policy_tensor, value_tensor
 
     def train(self):
-        state_tensor, policy_tensor, value_tensor = self._build_training_tensors()
-        dataset = TensorDataset(state_tensor, policy_tensor, value_tensor)
+        (
+            state_tensor,
+            accelerate_policy_tensor,
+            steering_policy_tensor,
+            value_tensor,
+        ) = self._build_training_tensors()
+        dataset = TensorDataset(
+            state_tensor,
+            accelerate_policy_tensor,
+            steering_policy_tensor,
+            value_tensor,
+        )
         dataloader = DataLoader(
             dataset,
             batch_size=int(self.config.batch_size),
@@ -457,16 +538,36 @@ class AdversarialAlphaZeroTrainer:
         for epoch in range(int(self.config.epochs)):
             epoch_loss_sum = 0.0
             epoch_policy_loss_sum = 0.0
+            epoch_accelerate_policy_loss_sum = 0.0
+            epoch_steering_policy_loss_sum = 0.0
             epoch_value_loss_sum = 0.0
             sample_count = 0
 
-            for state_batch, policy_batch, value_batch in dataloader:
+            for state_batch, accelerate_policy_batch, steering_policy_batch, value_batch in dataloader:
                 state_batch = state_batch.to(self.device, non_blocking=self.device.type != "cpu")
-                policy_batch = policy_batch.to(self.device, non_blocking=self.device.type != "cpu")
+                accelerate_policy_batch = accelerate_policy_batch.to(
+                    self.device,
+                    non_blocking=self.device.type != "cpu",
+                )
+                steering_policy_batch = steering_policy_batch.to(
+                    self.device,
+                    non_blocking=self.device.type != "cpu",
+                )
                 value_batch = value_batch.to(self.device, non_blocking=self.device.type != "cpu")
 
-                policy_logits, predicted_value = self.network(state_batch, return_logits=True)
-                policy_loss = self._soft_target_cross_entropy(policy_logits, policy_batch)
+                accelerate_logits, steering_logits, predicted_value = self.network(
+                    state_batch,
+                    return_logits=True,
+                )
+                accelerate_policy_loss = self._kl_policy_loss(
+                    accelerate_logits,
+                    accelerate_policy_batch,
+                )
+                steering_policy_loss = self._kl_policy_loss(
+                    steering_logits,
+                    steering_policy_batch,
+                )
+                policy_loss = accelerate_policy_loss + steering_policy_loss
                 value_loss = F.mse_loss(predicted_value, value_batch)
                 loss = policy_loss + value_loss
 
@@ -479,12 +580,20 @@ class AdversarialAlphaZeroTrainer:
                 sample_count += batch_items
                 epoch_loss_sum += float(loss.detach().item()) * batch_items
                 epoch_policy_loss_sum += float(policy_loss.detach().item()) * batch_items
+                epoch_accelerate_policy_loss_sum += (
+                    float(accelerate_policy_loss.detach().item()) * batch_items
+                )
+                epoch_steering_policy_loss_sum += (
+                    float(steering_policy_loss.detach().item()) * batch_items
+                )
                 epoch_value_loss_sum += float(value_loss.detach().item()) * batch_items
 
             metrics = {
                 "epoch": epoch + 1,
                 "loss": epoch_loss_sum / sample_count,
                 "policy_loss": epoch_policy_loss_sum / sample_count,
+                "accelerate_policy_loss": epoch_accelerate_policy_loss_sum / sample_count,
+                "steering_policy_loss": epoch_steering_policy_loss_sum / sample_count,
                 "value_loss": epoch_value_loss_sum / sample_count,
             }
             epoch_metrics.append(metrics)
@@ -494,6 +603,8 @@ class AdversarialAlphaZeroTrainer:
                     f"epoch={metrics['epoch']} "
                     f"loss={metrics['loss']:.6f} "
                     f"policy={metrics['policy_loss']:.6f} "
+                    f"accel={metrics['accelerate_policy_loss']:.6f} "
+                    f"steer={metrics['steering_policy_loss']:.6f} "
                     f"value={metrics['value_loss']:.6f}"
                 )
 

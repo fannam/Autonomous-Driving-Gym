@@ -19,7 +19,7 @@ from .perspective_stack import (
     advance_history,
     seed_history_from_env,
 )
-from .policy import normalize_policy
+from .policy import normalize_policy, outer_product_policy
 from .settings import PerspectiveTensorConfig, ZeroSumConfig
 
 
@@ -45,6 +45,36 @@ def _select_top_actions(
         reverse=True,
     )
     return tuple(ranked[:limit])
+
+
+def _prune_actions_by_relative_threshold(
+    available_actions: tuple[int, ...],
+    policy: dict[int, float],
+    relative_pruning_gamma: float | None,
+) -> tuple[int, ...]:
+    if (
+        relative_pruning_gamma is None
+        or float(relative_pruning_gamma) <= 0.0
+        or not available_actions
+    ):
+        return available_actions
+
+    action_probs = [
+        (int(action), float(policy.get(action, 0.0)))
+        for action in available_actions
+    ]
+    max_prob = max(prob for _, prob in action_probs)
+    if max_prob <= 0.0 or not np.isfinite(max_prob):
+        return available_actions
+
+    threshold = float(relative_pruning_gamma) * max_prob
+    pruned_actions = tuple(
+        action for action, prob in action_probs if float(prob) >= threshold
+    )
+    if pruned_actions:
+        return pruned_actions
+    best_action = max(action_probs, key=lambda item: item[1])[0]
+    return (best_action,)
 
 
 def _argmax_action(scores: dict[int, float]) -> int:
@@ -203,14 +233,25 @@ class SimultaneousMCTSNode:
         ego_policy: dict[int, float],
         npc_policy: dict[int, float],
         max_expand_actions_per_agent: int | None,
+        relative_pruning_gamma: float | None,
     ) -> None:
-        selected_ego_actions = _select_top_actions(
+        pruned_ego_actions = _prune_actions_by_relative_threshold(
             self.ego_available_actions,
+            ego_policy,
+            relative_pruning_gamma,
+        )
+        pruned_npc_actions = _prune_actions_by_relative_threshold(
+            self.npc_available_actions,
+            npc_policy,
+            relative_pruning_gamma,
+        )
+        selected_ego_actions = _select_top_actions(
+            pruned_ego_actions,
             ego_policy,
             max_expand_actions_per_agent,
         )
         selected_npc_actions = _select_top_actions(
-            self.npc_available_actions,
+            pruned_npc_actions,
             npc_policy,
             max_expand_actions_per_agent,
         )
@@ -271,6 +312,10 @@ class SimultaneousMCTS:
         root_dirichlet_alpha: float = 0.3,
         root_exploration_fraction: float = 0.25,
         max_expand_actions_per_agent: int | None = None,
+        n_action_axis_0: int = 5,
+        n_action_axis_1: int = 5,
+        relative_pruning_gamma: float | None = None,
+        flip_npc_steering: bool = True,
     ):
         self.root = root
         self.c_puct = float(c_puct)
@@ -282,6 +327,10 @@ class SimultaneousMCTS:
             if max_expand_actions_per_agent is None
             else int(max_expand_actions_per_agent)
         )
+        self.n_action_axis_0 = int(n_action_axis_0)
+        self.n_action_axis_1 = int(n_action_axis_1)
+        self.relative_pruning_gamma = relative_pruning_gamma
+        self.flip_npc_steering = bool(flip_npc_steering)
         self._device = _resolve_device(device)
         self._network = network.to(self._device)
         if self._network.training:
@@ -289,6 +338,27 @@ class SimultaneousMCTS:
         self._builder = tensor_builder
         self._pending_root_noise = False
         self._stats = SearchStats()
+
+    @staticmethod
+    def outer_product(
+        accelerate_policy,
+        steering_policy,
+        *,
+        n_action_axis_0: int,
+        n_action_axis_1: int,
+        flip_steering: bool = False,
+    ) -> dict[int, float]:
+        flat_policy = outer_product_policy(
+            accelerate_policy,
+            steering_policy,
+            n_action_axis_0=n_action_axis_0,
+            n_action_axis_1=n_action_axis_1,
+            flip_steering=flip_steering,
+        )
+        return {
+            int(action): float(probability)
+            for action, probability in enumerate(flat_policy.tolist())
+        }
 
     def reset_timing_stats(self) -> None:
         self._stats = SearchStats()
@@ -331,15 +401,27 @@ class SimultaneousMCTS:
             torch.cuda.synchronize(self._device)
         started_at = time.perf_counter()
         with torch.inference_mode():
-            policy_batch, value_batch = self._network(batch)
+            accelerate_batch, steering_batch, value_batch = self._network(batch)
         if self._device.type == "cuda":
             torch.cuda.synchronize(self._device)
         elapsed = time.perf_counter() - started_at
         self._stats.inference_calls += 1
         self._stats.inference_time_s += elapsed
 
-        ego_policy = {action: prob for action, prob in enumerate(policy_batch[0].tolist())}
-        npc_policy = {action: prob for action, prob in enumerate(policy_batch[1].tolist())}
+        ego_policy = self.outer_product(
+            accelerate_batch[0].tolist(),
+            steering_batch[0].tolist(),
+            n_action_axis_0=self.n_action_axis_0,
+            n_action_axis_1=self.n_action_axis_1,
+            flip_steering=False,
+        )
+        npc_policy = self.outer_product(
+            accelerate_batch[1].tolist(),
+            steering_batch[1].tolist(),
+            n_action_axis_0=self.n_action_axis_0,
+            n_action_axis_1=self.n_action_axis_1,
+            flip_steering=self.flip_npc_steering,
+        )
 
         raw_ego_value = float(value_batch[0].item())
         raw_npc_value = float(value_batch[1].item())
@@ -411,6 +493,7 @@ class SimultaneousMCTS:
                 ego_policy=ego_policy,
                 npc_policy=npc_policy,
                 max_expand_actions_per_agent=self.max_expand_actions_per_agent,
+                relative_pruning_gamma=self.relative_pruning_gamma,
             )
             leaf.backpropagate_recursive(ego_value, npc_value)
         finally:

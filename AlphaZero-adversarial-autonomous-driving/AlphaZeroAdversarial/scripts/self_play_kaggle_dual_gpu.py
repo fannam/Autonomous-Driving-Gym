@@ -169,24 +169,35 @@ def _resolve_self_play_env_spec(args: argparse.Namespace):
     )
 
 
-def _serialize_examples(examples: list[tuple[np.ndarray, np.ndarray, float]]):
+def _serialize_examples(examples: list[tuple[np.ndarray, np.ndarray, np.ndarray, float]]):
     if not examples:
         return (
             torch.empty((0, 0, 0, 0), dtype=torch.float32),
             torch.empty((0, 0), dtype=torch.float32),
+            torch.empty((0, 0), dtype=torch.float32),
             torch.empty((0, 1), dtype=torch.float32),
         )
 
-    states, policies, values = zip(*examples)
+    states, accelerate_policies, steering_policies, values = zip(*examples)
     state_tensor = torch.from_numpy(np.stack(states, axis=0)).to(dtype=torch.float32)
-    policy_tensor = torch.from_numpy(np.stack(policies, axis=0)).to(dtype=torch.float32)
+    accelerate_policy_tensor = torch.from_numpy(
+        np.stack(accelerate_policies, axis=0)
+    ).to(dtype=torch.float32)
+    steering_policy_tensor = torch.from_numpy(
+        np.stack(steering_policies, axis=0)
+    ).to(dtype=torch.float32)
     value_tensor = torch.tensor(values, dtype=torch.float32).unsqueeze(1)
-    return state_tensor, policy_tensor, value_tensor
+    return (
+        state_tensor,
+        accelerate_policy_tensor,
+        steering_policy_tensor,
+        value_tensor,
+    )
 
 
 def _flush_shard(
     *,
-    shard_examples: list[tuple[np.ndarray, np.ndarray, float]],
+    shard_examples: list[tuple[np.ndarray, np.ndarray, np.ndarray, float]],
     shard_episode_summaries: list[dict],
     worker_id: int,
     shard_index: int,
@@ -195,7 +206,9 @@ def _flush_shard(
     if not shard_examples:
         return None
 
-    states, policies, values = _serialize_examples(shard_examples)
+    states, accelerate_policies, steering_policies, values = _serialize_examples(
+        shard_examples
+    )
     shard_path = output_dir / f"worker_{worker_id:02d}_shard_{shard_index:03d}.pt"
     torch.save(
         {
@@ -203,8 +216,10 @@ def _flush_shard(
             "shard_index": int(shard_index),
             "sample_count": int(states.shape[0]),
             "episode_count": len(shard_episode_summaries),
+            "policy_format": "factorized_axes",
             "states": states,
-            "policies": policies,
+            "accelerate_policies": accelerate_policies,
+            "steering_policies": steering_policies,
             "values": values,
             "episodes": shard_episode_summaries,
         },
@@ -250,6 +265,8 @@ def _run_worker(task: dict) -> dict:
         input_shape=tuple(task["input_shape"]),
         n_residual_layers=int(task["n_residual_layers"]),
         n_actions=int(task["n_actions"]),
+        n_action_axis_0=int(task["n_action_axis_0"]),
+        n_action_axis_1=int(task["n_action_axis_1"]),
         channels=int(task["network_channels"]),
         dropout_p=float(task["network_dropout_p"]),
     )
@@ -273,7 +290,7 @@ def _run_worker(task: dict) -> dict:
         max_steps_per_episode = int(max_steps_per_episode)
     episodes_per_shard = int(task["episodes_per_shard"])
 
-    shard_examples: list[tuple[np.ndarray, np.ndarray, float]] = []
+    shard_examples: list[tuple[np.ndarray, np.ndarray, np.ndarray, float]] = []
     shard_episode_summaries: list[dict] = []
     shard_manifests: list[dict] = []
     shard_index = 0
@@ -463,6 +480,8 @@ def main() -> int:
             input_shape=config.input_shape,
             n_residual_layers=config.n_residual_layers,
             n_actions=config.n_actions,
+            n_action_axis_0=config.n_action_axis_0,
+            n_action_axis_1=config.n_action_axis_1,
             channels=config.network_channels,
             dropout_p=config.network_dropout_p,
         )
@@ -522,6 +541,8 @@ def main() -> int:
             "env_config": env_spec.config,
             "input_shape": tuple(config.input_shape),
             "n_actions": int(config.n_actions),
+            "n_action_axis_0": int(config.n_action_axis_0),
+            "n_action_axis_1": int(config.n_action_axis_1),
             "n_residual_layers": int(config.n_residual_layers),
             "network_channels": int(config.network_channels),
             "network_dropout_p": float(config.network_dropout_p),

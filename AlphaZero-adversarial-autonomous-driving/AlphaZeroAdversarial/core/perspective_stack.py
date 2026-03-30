@@ -102,6 +102,7 @@ class PerspectiveTensorBuilder:
     ) -> np.ndarray:
         width, height = self.config.grid_shape
         tensor = np.zeros((self.config.plane_count, width, height), dtype=np.float32)
+        mirror_y = bool(agent_index == 1 and self.config.flip_npc_perspective)
 
         ego_snapshot, npc_snapshot = get_agent_snapshots(env)
         if agent_index == 0:
@@ -119,6 +120,7 @@ class PerspectiveTensorBuilder:
             channel_offset=channel_offset,
             self_snapshot=self_snapshot,
             poses=self_history,
+            mirror_y=mirror_y,
         )
         channel_offset += self.config.history_length
 
@@ -127,6 +129,7 @@ class PerspectiveTensorBuilder:
             channel_offset=channel_offset,
             self_snapshot=self_snapshot,
             poses=opponent_history,
+            mirror_y=mirror_y,
         )
         channel_offset += self.config.history_length
 
@@ -135,12 +138,14 @@ class PerspectiveTensorBuilder:
             channel_offset=channel_offset,
             observation=observation,
             feature_names=feature_names,
+            mirror_y=mirror_y,
         )
         channel_offset = self._fill_scalar_planes(
             tensor=tensor,
             channel_offset=channel_offset,
             env=env,
             agent_index=agent_index,
+            mirror_y=mirror_y,
         )
 
         if channel_offset != self.config.plane_count:
@@ -155,6 +160,7 @@ class PerspectiveTensorBuilder:
         channel_offset: int,
         self_snapshot,
         poses: tuple[AgentPose, ...],
+        mirror_y: bool,
     ) -> None:
         for plane_offset, pose in enumerate(poses):
             plane = tensor[channel_offset + plane_offset]
@@ -162,6 +168,7 @@ class PerspectiveTensorBuilder:
                 target_position=np.asarray(pose.position, dtype=np.float32),
                 observer_position=np.asarray(self_snapshot.position, dtype=np.float32),
                 observer_heading=float(self_snapshot.heading),
+                mirror_y=mirror_y,
             )
             if indices is None:
                 continue
@@ -173,11 +180,15 @@ class PerspectiveTensorBuilder:
         channel_offset: int,
         observation: np.ndarray,
         feature_names: tuple[str, ...],
+        mirror_y: bool,
     ) -> int:
         for feature_name in self.config.static_feature_names:
             if feature_name in feature_names:
                 source_index = feature_names.index(feature_name)
-                tensor[channel_offset] = observation[source_index]
+                feature_plane = observation[source_index]
+                if mirror_y:
+                    feature_plane = np.flip(feature_plane, axis=1)
+                tensor[channel_offset] = feature_plane
             channel_offset += 1
         return channel_offset
 
@@ -187,6 +198,7 @@ class PerspectiveTensorBuilder:
         channel_offset: int,
         env,
         agent_index: int,
+        mirror_y: bool,
     ) -> int:
         ego_vehicle, npc_vehicle = env.unwrapped.controlled_vehicles[:2]
         self_vehicle = ego_vehicle if agent_index == 0 else npc_vehicle
@@ -196,8 +208,11 @@ class PerspectiveTensorBuilder:
             channel_offset += 1
 
         if self.config.include_heading_planes:
-            tensor[channel_offset].fill(float(np.cos(getattr(self_vehicle, "heading", 0.0))))
-            tensor[channel_offset + 1].fill(float(np.sin(getattr(self_vehicle, "heading", 0.0))))
+            heading = float(getattr(self_vehicle, "heading", 0.0))
+            if mirror_y:
+                heading = -heading
+            tensor[channel_offset].fill(float(np.cos(heading)))
+            tensor[channel_offset + 1].fill(float(np.sin(heading)))
             channel_offset += 2
 
         if self.config.include_progress_plane:
@@ -211,12 +226,15 @@ class PerspectiveTensorBuilder:
         target_position: np.ndarray,
         observer_position: np.ndarray,
         observer_heading: float,
+        mirror_y: bool,
     ) -> tuple[int, int] | None:
         delta = target_position - observer_position
         cos_h = float(np.cos(observer_heading))
         sin_h = float(np.sin(observer_heading))
         local_x = cos_h * float(delta[0]) + sin_h * float(delta[1])
         local_y = -sin_h * float(delta[0]) + cos_h * float(delta[1])
+        if mirror_y:
+            local_y = -local_y
 
         (x_min, x_max), (y_min, y_max) = self.config.grid_extent
         if not (x_min <= local_x < x_max and y_min <= local_y < y_max):

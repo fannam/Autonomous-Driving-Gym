@@ -46,12 +46,42 @@ def _resolve_observation_metadata(
     return grid_size, grid_step, features
 
 
+def _resolve_action_metadata(
+    *,
+    stage: str,
+    scenario_name: str | None = None,
+    raw_config: dict | None = None,
+) -> tuple[int, int]:
+    environment = get_environment_config(
+        stage=stage,
+        scenario_name=scenario_name,
+        raw_config=raw_config,
+    )
+    env_config = environment.get("config", {})
+    action = env_config.get("action", {})
+    if action.get("type") == "MultiAgentAction":
+        action = action.get("action_config", {})
+
+    actions_per_axis = int(action.get("actions_per_axis", 5))
+    longitudinal = bool(action.get("longitudinal", True))
+    lateral = bool(action.get("lateral", True))
+    return (
+        actions_per_axis if longitudinal else 1,
+        actions_per_axis if lateral else 1,
+    )
+
+
 DEFAULT_GRID_EXTENT, DEFAULT_GRID_STEP, DEFAULT_STATIC_FEATURES = _resolve_observation_metadata(
     stage="self_play",
     scenario_name=ACTIVE_SCENARIO,
     raw_config=RAW_CONFIG,
 )
 DEFAULT_GRID_SHAPE = compute_grid_shape(DEFAULT_GRID_EXTENT, DEFAULT_GRID_STEP)
+DEFAULT_ACTION_AXIS_0, DEFAULT_ACTION_AXIS_1 = _resolve_action_metadata(
+    stage="self_play",
+    scenario_name=ACTIVE_SCENARIO,
+    raw_config=RAW_CONFIG,
+)
 
 
 @dataclass(frozen=True)
@@ -70,6 +100,7 @@ class PerspectiveTensorConfig:
     include_self_speed_plane: bool = True
     include_heading_planes: bool = True
     include_progress_plane: bool = True
+    flip_npc_perspective: bool = True
 
     @classmethod
     def from_dict(
@@ -145,6 +176,8 @@ class AdversarialAlphaZeroConfig:
     tensor: PerspectiveTensorConfig = field(default_factory=PerspectiveTensorConfig)
     zero_sum: ZeroSumConfig = field(default_factory=ZeroSumConfig)
     n_actions: int = 25
+    n_action_axis_0: int = DEFAULT_ACTION_AXIS_0
+    n_action_axis_1: int = DEFAULT_ACTION_AXIS_1
     n_residual_layers: int = 10
     network_channels: int = 256
     network_dropout_p: float = 0.1
@@ -154,16 +187,45 @@ class AdversarialAlphaZeroConfig:
     temperature_drop_step: int | None = None
     root_dirichlet_alpha: float = 0.3
     root_exploration_fraction: float = 0.25
+    relative_pruning_gamma: float | None = 0.1
     max_expand_actions_per_agent: int | None = 6
     learning_rate: float = 0.001
     weight_decay: float = 1e-4
     batch_size: int = 32
     epochs: int = 10
     replay_buffer_size: int = 4000
+    use_policy_target_smoothing: bool = False
+    policy_target_smoothing_sigma: float = 1.0
     warmup_episodes: int = 0
     warmup_opponent_policy: str | None = None
     warmup_collect_opponent_samples: bool = True
     model_path: str = "models/alphazero_adversarial_racetrack.pth"
+
+    def __post_init__(self) -> None:
+        if int(self.n_action_axis_0) <= 0 or int(self.n_action_axis_1) <= 0:
+            raise ValueError("Action-axis sizes must be positive integers.")
+
+        expected_n_actions = int(self.n_action_axis_0) * int(self.n_action_axis_1)
+        if int(self.n_actions) != expected_n_actions:
+            raise ValueError(
+                "Expected n_actions to match the factorized action shape, "
+                f"got n_actions={self.n_actions} and "
+                f"shape=({self.n_action_axis_0}, {self.n_action_axis_1})."
+            )
+
+        if (
+            self.relative_pruning_gamma is not None
+            and float(self.relative_pruning_gamma) < 0.0
+        ):
+            raise ValueError("relative_pruning_gamma must be non-negative or None.")
+
+        if (
+            bool(self.use_policy_target_smoothing)
+            and float(self.policy_target_smoothing_sigma) <= 0.0
+        ):
+            raise ValueError(
+                "policy_target_smoothing_sigma must be positive when smoothing is enabled."
+            )
 
     @classmethod
     def from_dict(
@@ -171,6 +233,8 @@ class AdversarialAlphaZeroConfig:
         raw_config: dict | None = None,
         *,
         default_tensor_config: PerspectiveTensorConfig | None = None,
+        default_n_action_axis_0: int | None = None,
+        default_n_action_axis_1: int | None = None,
     ) -> "AdversarialAlphaZeroConfig":
         data = dict(raw_config or {})
         tensor = PerspectiveTensorConfig.from_dict(
@@ -197,6 +261,23 @@ class AdversarialAlphaZeroConfig:
             ),
         )
         zero_sum = ZeroSumConfig.from_dict(data.pop("zero_sum", {}))
+        if default_n_action_axis_0 is None:
+            default_n_action_axis_0 = DEFAULT_ACTION_AXIS_0
+        if default_n_action_axis_1 is None:
+            default_n_action_axis_1 = DEFAULT_ACTION_AXIS_1
+
+        data["n_action_axis_0"] = int(
+            data.get("n_action_axis_0", default_n_action_axis_0)
+        )
+        data["n_action_axis_1"] = int(
+            data.get("n_action_axis_1", default_n_action_axis_1)
+        )
+        data["n_actions"] = int(
+            data.get(
+                "n_actions",
+                int(data["n_action_axis_0"]) * int(data["n_action_axis_1"]),
+            )
+        )
         data["tensor"] = tensor
         data["zero_sum"] = zero_sum
         return cls(**data)
@@ -204,6 +285,10 @@ class AdversarialAlphaZeroConfig:
     @property
     def input_shape(self) -> tuple[int, int, int]:
         return self.tensor.network_input_shape
+
+    @property
+    def action_shape(self) -> tuple[int, int]:
+        return int(self.n_action_axis_0), int(self.n_action_axis_1)
 
 
 def load_stage_config(
@@ -215,6 +300,11 @@ def load_stage_config(
     loaded = RAW_CONFIG if raw_config is None else raw_config
     resolved_scenario = scenario_name or get_active_scenario_name(raw_config=loaded)
     grid_extent, grid_step, static_features = _resolve_observation_metadata(
+        stage=stage,
+        scenario_name=resolved_scenario,
+        raw_config=loaded,
+    )
+    action_axis_0, action_axis_1 = _resolve_action_metadata(
         stage=stage,
         scenario_name=resolved_scenario,
         raw_config=loaded,
@@ -232,6 +322,8 @@ def load_stage_config(
             grid_step=tuple(float(value) for value in grid_step),
             static_feature_names=tuple(str(value) for value in static_features),
         ),
+        default_n_action_axis_0=action_axis_0,
+        default_n_action_axis_1=action_axis_1,
     )
 
 
@@ -242,6 +334,7 @@ def reload_settings() -> tuple[
 ]:
     global CONFIG_PATH, RAW_CONFIG, ACTIVE_SCENARIO
     global DEFAULT_GRID_EXTENT, DEFAULT_GRID_STEP, DEFAULT_STATIC_FEATURES, DEFAULT_GRID_SHAPE
+    global DEFAULT_ACTION_AXIS_0, DEFAULT_ACTION_AXIS_1
     global SELF_PLAY_CONFIG, INFERENCE_CONFIG, EVALUATION_CONFIG
 
     CONFIG_PATH = resolve_config_path()
@@ -257,6 +350,11 @@ def reload_settings() -> tuple[
         raw_config=RAW_CONFIG,
     )
     DEFAULT_GRID_SHAPE = compute_grid_shape(DEFAULT_GRID_EXTENT, DEFAULT_GRID_STEP)
+    DEFAULT_ACTION_AXIS_0, DEFAULT_ACTION_AXIS_1 = _resolve_action_metadata(
+        stage="self_play",
+        scenario_name=ACTIVE_SCENARIO,
+        raw_config=RAW_CONFIG,
+    )
     SELF_PLAY_CONFIG = load_stage_config("self_play", raw_config=RAW_CONFIG)
     INFERENCE_CONFIG = load_stage_config("inference", raw_config=RAW_CONFIG)
     EVALUATION_CONFIG = load_stage_config("evaluation", raw_config=RAW_CONFIG)

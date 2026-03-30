@@ -39,6 +39,8 @@ def main():
         input_shape=config.input_shape,
         n_residual_layers=config.n_residual_layers,
         n_actions=config.n_actions,
+        n_action_axis_0=config.n_action_axis_0,
+        n_action_axis_1=config.n_action_axis_1,
         channels=config.network_channels,
         dropout_p=config.network_dropout_p,
     )
