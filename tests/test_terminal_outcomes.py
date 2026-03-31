@@ -1,23 +1,8 @@
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
 import numpy as np
 import pytest
 import torch
-
-
-REPO_ROOT = Path(__file__).resolve().parents[1]
-
-for relative_path in (
-    "highway-env",
-    "AlphaZero-adversarial-autonomous-driving",
-    "AlphaZero-meta-adversarial-autonomous-driving",
-):
-    path = REPO_ROOT / relative_path
-    if str(path) not in sys.path:
-        sys.path.insert(0, str(path))
 
 from AlphaZeroAdversarial.core.game import classify_terminal_state as classify_adversarial
 from AlphaZeroAdversarial.core.mcts import (
@@ -94,16 +79,21 @@ class DummyEnv:
 class DummyPredictionNode:
     def __init__(self) -> None:
         self.cached_perspective_batch = np.zeros((2, 1, 1, 1), dtype=np.float32)
+        self.cached_target_vector_batch = np.zeros((2, 0), dtype=np.float32)
 
     def ensure_perspective_batch(self, builder) -> None:
         del builder
+
+    def ensure_model_inputs(self, builder) -> None:
+        self.ensure_perspective_batch(builder)
 
 
 class DummyFactorizedNetwork:
     training = False
 
-    def __call__(self, batch):
+    def __call__(self, batch, target_vector=None):
         del batch
+        del target_vector
         accelerate = torch.tensor([[0.7, 0.3], [0.4, 0.6]], dtype=torch.float32)
         steering = torch.tensor([[0.8, 0.2], [0.1, 0.9]], dtype=torch.float32)
         value = torch.tensor([[0.25], [-0.75]], dtype=torch.float32)
@@ -113,8 +103,9 @@ class DummyFactorizedNetwork:
 class DummyFlatPolicyNetwork:
     training = False
 
-    def __call__(self, batch):
+    def __call__(self, batch, target_vector=None):
         del batch
+        del target_vector
         policy = torch.tensor([[0.6, 0.4], [0.3, 0.7]], dtype=torch.float32)
         value = torch.tensor([[0.1], [-0.4]], dtype=torch.float32)
         return policy, value

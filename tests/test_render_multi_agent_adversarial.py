@@ -3,21 +3,13 @@ from __future__ import annotations
 import argparse
 import copy
 import json
-import sys
-from pathlib import Path
 from typing import Any
-
-
-REPO_ROOT = Path(__file__).resolve().parents[1]
-HIGHWAY_ENV_ROOT = REPO_ROOT / "highway-env"
-
-if str(HIGHWAY_ENV_ROOT) not in sys.path:
-    sys.path.insert(0, str(HIGHWAY_ENV_ROOT))
 
 import gymnasium as gym
 import numpy as np
 
 import highway_env  # noqa: F401
+from tools.repo_layout import ALPHAZERO_ADVERSARIAL_ROOT
 
 try:
     import yaml
@@ -26,10 +18,7 @@ except ModuleNotFoundError:
 
 
 DEFAULT_CONFIG_PATH = (
-    REPO_ROOT
-    / "AlphaZero-adversarial-autonomous-driving"
-    / "configs"
-    / "racetrack_adversarial.yaml"
+    ALPHAZERO_ADVERSARIAL_ROOT / "configs" / "racetrack_adversarial.yaml"
 )
 CONTROLLED_AGENT_COLORS = (
     (50, 200, 0),

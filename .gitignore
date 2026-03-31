@@ -1,4 +1,10 @@
 __pycache__/
 *.py[cod]
+.pytest_cache/
+.ipynb_checkpoints/
+.DS_Store
 .venv/
+*.egg-info/
 AlphaZero-based-autonomous-driving/outputs/
+AlphaZero-adversarial-autonomous-driving/models/
+AlphaZero-meta-adversarial-autonomous-driving/models/

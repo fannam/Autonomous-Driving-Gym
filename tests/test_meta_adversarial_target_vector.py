@@ -1,25 +1,11 @@
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
 import numpy as np
 import pytest
 import torch
 
-
-REPO_ROOT = Path(__file__).resolve().parents[1]
-for relative_path in (
-    "highway-env",
-    "AlphaZero-meta-adversarial-autonomous-driving",
-):
-    path = REPO_ROOT / relative_path
-    if str(path) not in sys.path:
-        sys.path.insert(0, str(path))
-
 from highway_env.road.road import Road, RoadNetwork
 from highway_env.vehicle.controller import MDPVehicle
-
 from AlphaZeroMetaAdversarial.core.perspective_stack import PerspectiveTensorBuilder
 from AlphaZeroMetaAdversarial.core.settings import PerspectiveTensorConfig
 from AlphaZeroMetaAdversarial.network.alphazero_network import AlphaZeroNetwork

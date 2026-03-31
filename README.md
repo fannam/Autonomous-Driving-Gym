@@ -2,7 +2,7 @@
 
 This repository contains AlphaZero-style experiments for autonomous driving on top of a local editable fork of `highway-env`.
 
-The actively maintained code path is the package in `AlphaZero-based-autonomous-driving/AlphaZero/`. The older notebooks in the repository are still useful for historical context, but they are no longer the source of truth for the current implementation.
+The most actively maintained code path is still `AlphaZero-based-autonomous-driving/AlphaZero/`, but the repository also contains the adversarial and meta-adversarial variants as first-class sibling packages.
 
 ## What is in this repository
 
@@ -14,6 +14,16 @@ The actively maintained code path is the package in `AlphaZero-based-autonomous-
   - `scripts/`: runnable workflows
 - `highway-env/`
   Local fork of `highway-env`. The racetrack environment has been extended with a lap-based finish condition.
+- `scripts/`
+  Shell wrappers for common workflows.
+- `notebooks/workflows/`
+  Workflow notebooks that wrap the maintained CLI entrypoints.
+- `notebooks/analysis/`
+  Analysis notebooks for saved self-play and training outputs.
+- `tools/`
+  Python utilities and bootstrap helpers for cloning, installing, and running experiments.
+- `docs/plans/`
+  Historical planning notes that are useful as maintainer context.
 - `README.md`
   This file.
 

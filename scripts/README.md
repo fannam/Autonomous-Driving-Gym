@@ -1,18 +1,8 @@
-# Root Notebooks
+# Shell Wrappers
 
-This folder sits at the repository root, alongside `highway-env/`.
+This directory now contains shell entrypoints only.
 
-It contains Jupyter notebooks that wrap the maintained AlphaZero CLI scripts in:
+- Progressive self-play and training wrappers for `AlphaZero-based-autonomous-driving`
+- Adversarial and meta-adversarial wrappers for the multi-agent variants
 
-- `AlphaZero-based-autonomous-driving/AlphaZero/scripts/`
-
-Current notebooks:
-
-- `01_self_play_parallel.ipynb`
-  Generate `.pt` self-play episodes with the parallel self-play workflow.
-- `02_train_from_self_play.ipynb`
-  Train a checkpoint from saved self-play episodes.
-- `03_loop_self_play_train.ipynb`
-  Run an iterative self-play -> train loop across multiple iterations.
-
-Open Jupyter from the repository root so the notebooks can resolve paths cleanly.
+Workflow notebooks were moved to `../notebooks/README.md`.
