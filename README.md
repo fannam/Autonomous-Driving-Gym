@@ -76,6 +76,23 @@ uv run python source/AlphaZero-adversarial-autonomous-driving/AlphaZeroAdversari
   --steps 8
 ```
 
+Single-agent render smoke test on `highway-v0`:
+
+```bash
+uv run python source/highway-env/scripts/render_highway_v0.py \
+  --steps 20 \
+  --render-mode rgb_array
+```
+
+Two-agent `DiscreteMetaAction` render on `highway-v0` with both controlled vehicles visible:
+
+```bash
+uv run python source/highway-env/scripts/render_highway_v0_discrete_meta.py \
+  --steps 20 \
+  --render-mode human \
+  --camera-mode midpoint
+```
+
 Meta-adversarial training:
 
 ```bash
