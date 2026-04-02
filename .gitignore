@@ -7,4 +7,4 @@ __pycache__/
 *.egg-info/
 legacy/AlphaZero-based-autonomous-driving/outputs/
 source/AlphaZero-adversarial-autonomous-driving/models/
-source/AlphaZero-meta-adversarial-autonomous-driving/models/
+# source/AlphaZero-meta-adversarial-autonomous-driving/models/
