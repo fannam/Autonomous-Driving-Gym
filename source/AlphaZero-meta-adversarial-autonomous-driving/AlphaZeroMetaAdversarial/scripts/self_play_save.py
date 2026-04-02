@@ -248,7 +248,7 @@ def _flush_shard(
     }
 
 
-def _build_step_callback(progress_interval: int):
+def _build_step_callback(progress_interval: int, *, episode_index: int):
     if progress_interval <= 0:
         return None
 
@@ -258,11 +258,21 @@ def _build_step_callback(progress_interval: int):
         if step % progress_interval != 0 and not done:
             return
         search_stats = info.get("search_stats") or {}
+        joint_action = info.get("joint_action")
+        rollout_time_s = float(search_stats.get("rollout_time_s", 0.0))
+        inference_calls = int(search_stats.get("inference_calls", 0))
+        inference_time_s = float(search_stats.get("inference_time_s", 0.0))
         print(
-            f"[self-play] step={step} done={done} "
+            f"[self-play] episode={episode_index} step={step} done={done} "
+            f"action={joint_action} outcome={info.get('outcome_reason')} "
             f"rollouts={int(search_stats.get('rollouts', 0))} "
+            f"terminal_rollouts={int(search_stats.get('terminal_rollouts', 0))} "
+            f"rollout={rollout_time_s:.3f}s "
+            f"avg_rollout={float(search_stats.get('avg_rollout_ms', 0.0)):.2f}ms "
+            f"nn_calls={inference_calls} "
+            f"nn_total={inference_time_s:.3f}s "
             f"rps={float(search_stats.get('rollouts_per_sec', 0.0)):.2f} "
-            f"nn={float(search_stats.get('avg_inference_ms', 0.0)):.1f}ms",
+            f"nn_avg={float(search_stats.get('avg_inference_ms', 0.0)):.2f}ms",
             flush=True,
         )
 
@@ -333,13 +343,15 @@ def main() -> int:
         flush=True,
     )
 
-    step_callback = _build_step_callback(int(args.progress_interval))
-
     try:
         for episode_offset in range(int(args.episodes)):
             episode_seed = int(args.seed_start) + episode_offset
             episode_index = int(args.episode_index_start) + episode_offset
             started_at = time.perf_counter()
+            step_callback = _build_step_callback(
+                int(args.progress_interval),
+                episode_index=episode_index,
+            )
             summary = trainer.run_episode(
                 seed=episode_seed,
                 episode_index=episode_index,
