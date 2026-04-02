@@ -56,6 +56,16 @@ def _parse_gpu_indices(raw_value: str | None) -> list[int] | None:
     return values or None
 
 
+def _resolve_global_worker_offset(args: argparse.Namespace) -> int:
+    if args.global_worker_offset is not None:
+        offset = int(args.global_worker_offset)
+    else:
+        offset = int(args.machine_rank) * int(args.workers)
+    if offset < 0:
+        raise ValueError("The global worker offset must be non-negative.")
+    return offset
+
+
 def _resolve_worker_devices(args: argparse.Namespace) -> list[str]:
     requested_device = str(args.device).lower()
     if requested_device == "cpu":
@@ -198,6 +208,7 @@ def _flush_shard(
     shard_examples: list[tuple[np.ndarray, np.ndarray, np.ndarray, float]],
     shard_episode_summaries: list[dict],
     worker_id: int,
+    global_worker_id: int,
     shard_index: int,
     output_dir: Path,
 ) -> dict | None:
@@ -205,10 +216,14 @@ def _flush_shard(
         return None
 
     states, target_vectors, policies, values = _serialize_examples(shard_examples)
-    shard_path = output_dir / f"worker_{worker_id:02d}_shard_{shard_index:03d}.pt"
+    shard_path = (
+        output_dir
+        / f"global_worker_{global_worker_id:05d}_local_worker_{worker_id:02d}_shard_{shard_index:03d}.pt"
+    )
     torch.save(
         {
             "worker_id": int(worker_id),
+            "global_worker_id": int(global_worker_id),
             "shard_index": int(shard_index),
             "sample_count": int(states.shape[0]),
             "episode_count": len(shard_episode_summaries),
@@ -222,13 +237,14 @@ def _flush_shard(
         shard_path,
     )
     print(
-        f"[shard] worker={worker_id} shard={shard_index} "
+        f"[shard] worker={worker_id} global_worker={global_worker_id} shard={shard_index} "
         f"episodes={len(shard_episode_summaries)} samples={int(states.shape[0])} "
         f"path={shard_path}",
         flush=True,
     )
     return {
         "worker_id": int(worker_id),
+        "global_worker_id": int(global_worker_id),
         "shard_index": int(shard_index),
         "sample_count": int(states.shape[0]),
         "episode_count": len(shard_episode_summaries),
@@ -238,13 +254,14 @@ def _flush_shard(
 
 def _run_worker(task: dict) -> dict:
     worker_id = int(task["worker_id"])
+    global_worker_id = int(task["global_worker_id"])
     device = str(task["device"])
     if device.startswith("cuda:"):
         torch.cuda.set_device(device)
 
     torch.set_num_threads(int(task["torch_threads_per_worker"]))
     torch.manual_seed(int(task["network_seed"]))
-    np.random.seed(int(task["self_play_seed"]))
+    np.random.seed(int(task["self_play_seed_base"]))
 
     import gymnasium as gym
     import highway_env
@@ -293,8 +310,10 @@ def _run_worker(task: dict) -> dict:
     total_samples = 0
 
     print(
-        f"[worker {worker_id}] pid={os.getpid()} device={device} "
+        f"[worker {worker_id}] global_worker={global_worker_id} pid={os.getpid()} device={device} "
         f"episodes={episodes_per_worker} n_simulations={task['config'].n_simulations} "
+        f"self_play_seed_base={int(task['self_play_seed_base'])} "
+        f"env_seed_base={int(task['env_seed_base'])} "
         f"reuse_tree={int(task['reuse_tree_between_steps'])} "
         f"output={output_dir}",
         flush=True,
@@ -306,7 +325,8 @@ def _run_worker(task: dict) -> dict:
 
     try:
         for episode_offset in range(episodes_per_worker):
-            episode_seed = int(task["self_play_seed"]) + episode_offset
+            episode_seed = int(task["self_play_seed_base"]) + episode_offset
+            episode_env_seed = int(task["env_seed_base"]) + episode_offset
             episode_index = int(task["episode_index_offset"]) + episode_offset
             started_at = time.perf_counter()
 
@@ -328,6 +348,7 @@ def _run_worker(task: dict) -> dict:
 
             summary = trainer.run_episode(
                 seed=episode_seed,
+                env_seed=episode_env_seed,
                 episode_index=episode_index,
                 max_steps=max_steps_per_episode,
                 store_in_replay=False,
@@ -343,11 +364,13 @@ def _run_worker(task: dict) -> dict:
             shard_examples.extend(episode_examples)
             summary["sample_count"] = int(sample_count)
             summary["device"] = device
+            summary["global_worker_id"] = global_worker_id
             summary["elapsed_s"] = float(elapsed)
             shard_episode_summaries.append(summary)
 
             print(
                 f"[worker {worker_id}] episode={episode_index} "
+                f"seed={episode_seed} env_seed={episode_env_seed} "
                 f"steps={summary['steps']} samples={sample_count} "
                 f"outcome={summary['outcome_reason']} time={elapsed:.2f}s",
                 flush=True,
@@ -358,6 +381,7 @@ def _run_worker(task: dict) -> dict:
                     shard_examples=shard_examples,
                     shard_episode_summaries=shard_episode_summaries,
                     worker_id=worker_id,
+                    global_worker_id=global_worker_id,
                     shard_index=shard_index,
                     output_dir=output_dir,
                 )
@@ -371,6 +395,7 @@ def _run_worker(task: dict) -> dict:
             shard_examples=shard_examples,
             shard_episode_summaries=shard_episode_summaries,
             worker_id=worker_id,
+            global_worker_id=global_worker_id,
             shard_index=shard_index,
             output_dir=output_dir,
         )
@@ -381,6 +406,7 @@ def _run_worker(task: dict) -> dict:
 
     return {
         "worker_id": worker_id,
+        "global_worker_id": global_worker_id,
         "device": device,
         "episodes_per_worker": episodes_per_worker,
         "total_samples": total_samples,
@@ -424,12 +450,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--total-episodes", type=int, default=None)
     parser.add_argument("--episodes-per-shard", type=int, default=2)
     parser.add_argument("--self-play-seed", type=int, default=1000)
+    parser.add_argument("--env-seed", type=int, default=10)
     parser.add_argument("--network-seed", type=int, default=42)
     parser.add_argument("--model-path", type=str, default=None)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--device", type=str, default="auto")
     parser.add_argument("--num-gpus", type=int, default=2)
     parser.add_argument("--gpu-indices", type=str, default="0,1")
+    parser.add_argument("--machine-rank", type=int, default=0)
+    parser.add_argument("--global-worker-offset", type=int, default=None)
+    parser.add_argument("--seed-block-size", type=int, default=1_000_000)
     parser.add_argument("--torch-threads-per-worker", type=int, default=1)
     parser.add_argument("--max-steps-per-episode", type=int, default=None)
     parser.add_argument("--progress-interval", type=int, default=10)
@@ -457,11 +487,22 @@ def main() -> int:
     output_dir = args.output_dir.expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    if int(args.seed_block_size) <= 0:
+        raise ValueError("--seed-block-size must be a positive integer.")
+
     config = _build_config_from_args(args)
     env_spec = _resolve_self_play_env_spec(args)
     worker_devices = _resolve_worker_devices(args)
     worker_episode_counts = _resolve_worker_episode_counts(args)
+    global_worker_offset = _resolve_global_worker_offset(args)
     episode_mode = _resolve_episode_mode(args, worker_episode_counts)
+
+    max_worker_episodes = max(worker_episode_counts, default=0)
+    if max_worker_episodes >= int(args.seed_block_size):
+        raise ValueError(
+            "--seed-block-size must be larger than the maximum episode count assigned "
+            "to any worker so env seeds never overlap."
+        )
 
     if args.episodes_per_shard <= 0:
         raise ValueError("--episodes-per-shard must be a positive integer.")
@@ -495,6 +536,9 @@ def main() -> int:
         f"workers={args.workers} "
         f"{episode_mode} "
         f"device={args.device} "
+        f"machine_rank={args.machine_rank} "
+        f"global_worker_offset={global_worker_offset} "
+        f"seed_block_size={args.seed_block_size} "
         f"n_simulations={config.n_simulations} "
         f"reuse_tree={int(not args.no_reuse_tree_between_steps)} "
         f"num_gpus={args.num_gpus if args.num_gpus is not None else 'auto'} "
@@ -519,13 +563,18 @@ def main() -> int:
     ):
         if int(episode_count) <= 0:
             continue
+        global_worker_id = global_worker_offset + worker_id
         task = {
             "worker_id": worker_id,
+            "global_worker_id": global_worker_id,
             "device": device,
             "episodes_per_worker": int(episode_count),
             "episode_index_offset": int(next_episode_offset),
             "episodes_per_shard": int(args.episodes_per_shard),
-            "self_play_seed": int(args.self_play_seed) + worker_id * 10000,
+            "self_play_seed_base": int(args.self_play_seed)
+            + global_worker_id * int(args.seed_block_size),
+            "env_seed_base": int(args.env_seed)
+            + global_worker_id * int(args.seed_block_size),
             "network_seed": int(args.network_seed),
             "torch_threads_per_worker": int(args.torch_threads_per_worker),
             "max_steps_per_episode": args.max_steps_per_episode,
@@ -554,8 +603,8 @@ def main() -> int:
         process.start()
         processes.append(process)
         print(
-            f"[manager] launched worker={worker_id} pid={process.pid} "
-            f"device={device} episodes={episode_count}",
+            f"[manager] launched worker={worker_id} global_worker={global_worker_id} "
+            f"pid={process.pid} device={device} episodes={episode_count}",
             flush=True,
         )
         next_episode_offset += int(episode_count)
@@ -590,7 +639,9 @@ def main() -> int:
             pending_worker_ids.discard(int(worker_result["worker_id"]))
             worker_results.append(worker_result)
             print(
-                f"[manager] worker={worker_result['worker_id']} device={worker_result['device']} "
+                f"[manager] worker={worker_result['worker_id']} "
+                f"global_worker={worker_result['global_worker_id']} "
+                f"device={worker_result['device']} "
                 f"samples={worker_result['total_samples']} shards={len(worker_result['shards'])}",
                 flush=True,
             )
