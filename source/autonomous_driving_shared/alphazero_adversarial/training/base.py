@@ -321,6 +321,7 @@ class BaseAdversarialAlphaZeroTrainer:
         self,
         *,
         seed: int = 21,
+        env_seed: int | None = None,
         episode_index: int = 0,
         max_steps: int | None = None,
         store_in_replay: bool = True,
@@ -330,8 +331,10 @@ class BaseAdversarialAlphaZeroTrainer:
         step_callback=None,
     ) -> dict:
         env = self._require_env()
-        np.random.seed(seed)
-        env.reset(seed=seed)
+        resolved_seed = int(seed)
+        resolved_env_seed = resolved_seed if env_seed is None else int(env_seed)
+        np.random.seed(resolved_seed)
+        env.reset(seed=resolved_env_seed)
 
         policy_modes = self._policy_modes_for_episode(episode_index)
         collect_npc_samples = self._should_collect_npc_samples(episode_index)
@@ -445,7 +448,8 @@ class BaseAdversarialAlphaZeroTrainer:
             self.replay_buffer.extend(episode_examples)
 
         summary = {
-            "seed": int(seed),
+            "seed": resolved_seed,
+            "env_seed": resolved_env_seed,
             "episode_index": int(episode_index),
             "steps": int(step_count),
             "outcome_reason": outcome.reason,
@@ -461,6 +465,8 @@ class BaseAdversarialAlphaZeroTrainer:
             print(
                 "episode="
                 f"{summary['episode_index']} "
+                f"seed={summary['seed']} "
+                f"env_seed={summary['env_seed']} "
                 f"steps={summary['steps']} "
                 f"outcome={summary['outcome_reason']} "
                 f"ego={summary['ego_value']:.2f} "
@@ -474,6 +480,7 @@ class BaseAdversarialAlphaZeroTrainer:
         iterations: int,
         episodes_per_iteration: int,
         seed_start: int = 21,
+        env_seed_start: int | None = None,
         max_steps: int | None = None,
     ) -> list[dict]:
         training_summaries = []
@@ -482,8 +489,14 @@ class BaseAdversarialAlphaZeroTrainer:
             for episode_offset in range(int(episodes_per_iteration)):
                 episode_index = iteration * int(episodes_per_iteration) + episode_offset
                 episode_seed = seed_start + episode_index
+                episode_env_seed = (
+                    None
+                    if env_seed_start is None
+                    else int(env_seed_start) + episode_index
+                )
                 episode_summary = self.run_episode(
                     seed=episode_seed,
+                    env_seed=episode_env_seed,
                     episode_index=episode_index,
                     max_steps=max_steps,
                     store_in_replay=True,

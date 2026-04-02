@@ -59,6 +59,7 @@ def main():
         iterations=args.iterations,
         episodes_per_iteration=args.episodes_per_iteration,
         seed_start=args.seed_start,
+        env_seed_start=args.env_seed,
         max_steps=args.max_steps,
     )
     saved_path = trainer.save_model(args.save_path)

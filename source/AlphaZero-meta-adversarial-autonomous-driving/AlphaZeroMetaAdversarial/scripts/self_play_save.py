@@ -337,6 +337,7 @@ def main() -> int:
         f"episodes={args.episodes} "
         f"device={args.device} "
         f"model={model_source}:{model_path} "
+        f"env_seed_start={args.env_seed} "
         f"network_seed={args.network_seed} "
         f"model_sha256={model_sha256} "
         f"output_dir={output_dir}",
@@ -346,6 +347,7 @@ def main() -> int:
     try:
         for episode_offset in range(int(args.episodes)):
             episode_seed = int(args.seed_start) + episode_offset
+            episode_env_seed = int(args.env_seed) + episode_offset
             episode_index = int(args.episode_index_start) + episode_offset
             started_at = time.perf_counter()
             step_callback = _build_step_callback(
@@ -354,6 +356,7 @@ def main() -> int:
             )
             summary = trainer.run_episode(
                 seed=episode_seed,
+                env_seed=episode_env_seed,
                 episode_index=episode_index,
                 max_steps=args.max_steps_per_episode,
                 store_in_replay=False,
@@ -375,6 +378,7 @@ def main() -> int:
 
             print(
                 f"[episode] index={episode_index} seed={episode_seed} "
+                f"env_seed={episode_env_seed} "
                 f"steps={summary['steps']} samples={sample_count} "
                 f"outcome={summary['outcome_reason']} time={elapsed:.2f}s",
                 flush=True,

@@ -54,9 +54,12 @@ def main():
 
     summaries = []
     for episode_offset in range(args.episodes):
+        episode_seed = args.seed_start + episode_offset
+        episode_env_seed = args.env_seed + episode_offset
         summaries.append(
             trainer.run_episode(
-                seed=args.seed_start + episode_offset,
+                seed=episode_seed,
+                env_seed=episode_env_seed,
                 episode_index=config.warmup_episodes + episode_offset,
                 max_steps=args.max_steps,
                 store_in_replay=False,

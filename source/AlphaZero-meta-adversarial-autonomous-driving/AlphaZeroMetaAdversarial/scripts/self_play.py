@@ -58,6 +58,7 @@ def main():
         trainer.load_model(args.model_path)
     summary = trainer.run_episode(
         seed=args.episode_seed,
+        env_seed=args.env_seed,
         episode_index=args.episode_index,
         max_steps=args.max_steps,
         store_in_replay=False,
