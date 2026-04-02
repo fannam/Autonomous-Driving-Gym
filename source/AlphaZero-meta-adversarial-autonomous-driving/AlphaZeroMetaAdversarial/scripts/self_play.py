@@ -2,6 +2,8 @@ import argparse
 import sys
 from pathlib import Path
 
+import torch
+
 try:
     from AlphaZeroMetaAdversarial.environment.config import init_env
     from AlphaZeroMetaAdversarial.network.alphazero_network import AlphaZeroNetwork
@@ -24,6 +26,8 @@ def parse_args():
     parser.add_argument("--episode-index", type=int, default=0)
     parser.add_argument("--device", type=str, default="auto")
     parser.add_argument("--max-steps", type=int, default=None)
+    parser.add_argument("--network-seed", type=int, default=42)
+    parser.add_argument("--model-path", type=str, default=None)
     parser.add_argument("--quiet", action="store_true")
     return parser.parse_args()
 
@@ -32,6 +36,7 @@ def main():
     args = parse_args()
     config = SELF_PLAY_CONFIG
     env = init_env(seed=args.env_seed, stage="self_play")
+    torch.manual_seed(int(args.network_seed))
     network = AlphaZeroNetwork(
         input_shape=config.input_shape,
         n_residual_layers=config.n_residual_layers,
@@ -49,6 +54,8 @@ def main():
         verbose=not args.quiet,
         add_root_dirichlet_noise=True,
     )
+    if args.model_path:
+        trainer.load_model(args.model_path)
     summary = trainer.run_episode(
         seed=args.episode_seed,
         episode_index=args.episode_index,
@@ -57,6 +64,8 @@ def main():
         add_root_dirichlet_noise=True,
         sample_actions=True,
     )
+    summary["network_seed"] = int(args.network_seed)
+    summary["model_path"] = args.model_path
     print(summary)
 
 

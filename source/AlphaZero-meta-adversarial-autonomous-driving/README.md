@@ -23,6 +23,7 @@ This package is a separate AlphaZero-style implementation for a two-agent advers
   - `trainer.py`: self-play, replay buffer, learner loop, curriculum warmup
 - `AlphaZeroMetaAdversarial/scripts/`
   - `self_play.py`: run one self-play episode
+  - `self_play_save.py`: run self-play only and save shard/manifest outputs
   - `train.py`: iterative self-play + training
   - `evaluate.py`: greedy evaluation with a saved checkpoint
 
@@ -67,6 +68,7 @@ From the repo root:
 
 ```bash
 bash scripts/run_meta_adversarial_train.sh --iterations 3 --episodes-per-iteration 2
+bash scripts/run_meta_adversarial_self_play.sh --episodes 4 --episodes-per-shard 2
 uv run python source/AlphaZero-meta-adversarial-autonomous-driving/AlphaZeroMetaAdversarial/scripts/evaluate.py --model-path source/AlphaZero-meta-adversarial-autonomous-driving/models/alphazero_meta_adversarial_highway.pth
 ```
 
@@ -76,7 +78,11 @@ If the current Python environment is already prepared, you can skip installs:
 
 ```bash
 INSTALL_DEPS=0 bash scripts/run_meta_adversarial_train.sh --iterations 1 --episodes-per-iteration 1
+INSTALL_DEPS=0 bash scripts/run_meta_adversarial_self_play.sh --episodes 2 --network-seed 42
 ```
+
+For distributed self-play across multiple machines, prefer `bash scripts/run_meta_adversarial_self_play.sh`.
+When `--model-path` is omitted, it creates and records a bootstrap checkpoint from a fixed `--network-seed` (default `42`), saves shard `.pt` files plus `manifest.json`, and includes the model SHA-256 checksum so different machines can verify they used the same initial network.
 
 ## Notes
 
