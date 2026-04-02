@@ -9,8 +9,8 @@ INSTALL_DEPS="${INSTALL_DEPS:-1}"
 UPGRADE_PIP="${UPGRADE_PIP:-0}"
 
 export ALPHAZERO_ADVERSARIAL_SCENARIO="${ALPHAZERO_ADVERSARIAL_SCENARIO:-highway_adversarial}"
-export ALPHAZERO_ADVERSARIAL_CONFIG_PATH="${ALPHAZERO_ADVERSARIAL_CONFIG_PATH:-$REPO_ROOT/AlphaZero-adversarial-autonomous-driving/configs/highway_adversarial.yaml}"
-export PYTHONPATH="$REPO_ROOT/highway-env:$REPO_ROOT/AlphaZero-adversarial-autonomous-driving${PYTHONPATH:+:$PYTHONPATH}"
+export ALPHAZERO_ADVERSARIAL_CONFIG_PATH="${ALPHAZERO_ADVERSARIAL_CONFIG_PATH:-$REPO_ROOT/source/AlphaZero-adversarial-autonomous-driving/configs/highway_adversarial.yaml}"
+export PYTHONPATH="$REPO_ROOT/source:$REPO_ROOT/source/highway-env:$REPO_ROOT/source/AlphaZero-adversarial-autonomous-driving${PYTHONPATH:+:$PYTHONPATH}"
 
 STAGE="${STAGE:-self_play}"
 ENV_SEED="${ENV_SEED:-21}"
@@ -55,13 +55,13 @@ if [[ "$INSTALL_DEPS" == "1" ]]; then
   ensure_python_module numpy "numpy>=1.26.0"
   ensure_python_module PIL "Pillow>=10.0.0"
 
-  install_local_editable "$REPO_ROOT/highway-env"
-  install_local_editable "$REPO_ROOT/AlphaZero-adversarial-autonomous-driving"
+  install_local_editable "$REPO_ROOT/source/highway-env"
+  install_local_editable "$REPO_ROOT/source/AlphaZero-adversarial-autonomous-driving"
 fi
 
 cmd=(
   "$PYTHON_BIN"
-  AlphaZero-adversarial-autonomous-driving/AlphaZeroAdversarial/scripts/render_steps.py
+  source/AlphaZero-adversarial-autonomous-driving/AlphaZeroAdversarial/scripts/render_steps.py
   --stage "$STAGE"
   --config-path "$ALPHAZERO_ADVERSARIAL_CONFIG_PATH"
   --env-seed "$ENV_SEED"

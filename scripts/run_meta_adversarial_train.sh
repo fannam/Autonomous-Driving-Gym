@@ -2,8 +2,8 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PROJECT_ROOT="${REPO_ROOT}/AlphaZero-meta-adversarial-autonomous-driving"
-HIGHWAY_ENV_ROOT="${REPO_ROOT}/highway-env"
+PROJECT_ROOT="${REPO_ROOT}/source/AlphaZero-meta-adversarial-autonomous-driving"
+HIGHWAY_ENV_ROOT="${REPO_ROOT}/source/highway-env"
 cd "${REPO_ROOT}"
 
 # Notebook environments often leak an inline backend that breaks subprocess rendering.
@@ -20,7 +20,7 @@ PIP_FLAGS=()
 
 export ALPHAZERO_META_ADVERSARIAL_SCENARIO="${ALPHAZERO_META_ADVERSARIAL_SCENARIO:-highway_meta_adversarial}"
 export ALPHAZERO_META_ADVERSARIAL_CONFIG_PATH="${ALPHAZERO_META_ADVERSARIAL_CONFIG_PATH:-$PROJECT_ROOT/configs/highway_meta_adversarial.yaml}"
-export PYTHONPATH="${HIGHWAY_ENV_ROOT}:${PROJECT_ROOT}${PYTHONPATH:+:${PYTHONPATH}}"
+export PYTHONPATH="${REPO_ROOT}/source:${HIGHWAY_ENV_ROOT}:${PROJECT_ROOT}${PYTHONPATH:+:${PYTHONPATH}}"
 
 ITERATIONS="${ITERATIONS:-1}"
 EPISODES_PER_ITERATION="${EPISODES_PER_ITERATION:-1}"

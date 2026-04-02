@@ -5,9 +5,10 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
 export MPLBACKEND="${MPLBACKEND:-Agg}"
+export PYTHONPATH="$REPO_ROOT/source/highway-env:$REPO_ROOT/legacy/AlphaZero-based-autonomous-driving${PYTHONPATH:+:$PYTHONPATH}"
 
-TRAINING_OUTPUT_ROOT_DEFAULT="$REPO_ROOT/AlphaZero-based-autonomous-driving/outputs/progressive_training"
-SELF_PLAY_OUTPUT_ROOT_DEFAULT="$REPO_ROOT/AlphaZero-based-autonomous-driving/outputs/progressive_self_play"
+TRAINING_OUTPUT_ROOT_DEFAULT="$REPO_ROOT/legacy/AlphaZero-based-autonomous-driving/outputs/progressive_training"
+SELF_PLAY_OUTPUT_ROOT_DEFAULT="$REPO_ROOT/legacy/AlphaZero-based-autonomous-driving/outputs/progressive_self_play"
 
 find_latest_model() {
   find "$TRAINING_OUTPUT_ROOT_DEFAULT" -maxdepth 1 -type f -name 'model_iter_*.pth' 2>/dev/null \
@@ -56,7 +57,7 @@ RESULT_TIMEOUT="${RESULT_TIMEOUT:-}"
 
 cmd=(
   uv run python
-  AlphaZero-based-autonomous-driving/AlphaZero/scripts/progressive_self_play.py
+  legacy/AlphaZero-based-autonomous-driving/AlphaZero/scripts/progressive_self_play.py
   --iteration "$ITERATION"
   --output-root "$OUTPUT_ROOT"
   --workers "$WORKERS"

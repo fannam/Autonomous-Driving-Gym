@@ -5,10 +5,13 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-HIGHWAY_ENV_ROOT = REPO_ROOT / "highway-env"
-ALPHAZERO_BASED_ROOT = REPO_ROOT / "AlphaZero-based-autonomous-driving"
-ALPHAZERO_ADVERSARIAL_ROOT = REPO_ROOT / "AlphaZero-adversarial-autonomous-driving"
-ALPHAZERO_META_ADVERSARIAL_ROOT = REPO_ROOT / "AlphaZero-meta-adversarial-autonomous-driving"
+SOURCE_ROOT = REPO_ROOT / "source"
+LEGACY_ROOT = REPO_ROOT / "legacy"
+HIGHWAY_ENV_ROOT = SOURCE_ROOT / "highway-env"
+AUTONOMOUS_DRIVING_SHARED_ROOT = SOURCE_ROOT / "autonomous_driving_shared"
+ALPHAZERO_BASED_ROOT = LEGACY_ROOT / "AlphaZero-based-autonomous-driving"
+ALPHAZERO_ADVERSARIAL_ROOT = SOURCE_ROOT / "AlphaZero-adversarial-autonomous-driving"
+ALPHAZERO_META_ADVERSARIAL_ROOT = SOURCE_ROOT / "AlphaZero-meta-adversarial-autonomous-driving"
 
 SCRIPTS_ROOT = REPO_ROOT / "scripts"
 TOOLS_ROOT = REPO_ROOT / "tools"
@@ -22,6 +25,7 @@ PROJECT_ROOTS = {
     "alphazero_based": ALPHAZERO_BASED_ROOT,
     "alphazero_adversarial": ALPHAZERO_ADVERSARIAL_ROOT,
     "alphazero_meta_adversarial": ALPHAZERO_META_ADVERSARIAL_ROOT,
+    "autonomous_driving_shared": AUTONOMOUS_DRIVING_SHARED_ROOT,
     "highway_env": HIGHWAY_ENV_ROOT,
 }
 

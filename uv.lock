@@ -31,7 +31,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "gymnasium", specifier = ">=1.2.3" },
-    { name = "highway-env", editable = "highway-env" },
+    { name = "highway-env", editable = "source/highway-env" },
     { name = "numpy", specifier = ">=2.4.2" },
     { name = "pyyaml", specifier = ">=6.0.2" },
     { name = "torch", specifier = ">=2.10.0" },
@@ -322,7 +322,7 @@ wheels = [
 
 [[package]]
 name = "highway-env"
-source = { editable = "highway-env" }
+source = { editable = "source/highway-env" }
 dependencies = [
     { name = "farama-notifications" },
     { name = "gymnasium" },

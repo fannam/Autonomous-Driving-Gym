@@ -21,7 +21,7 @@ package = false
 
 [tool.uv.workspace]
 members = [
-    "highway-env",
+    "source/highway-env",
 ]
 
 [tool.uv.sources]

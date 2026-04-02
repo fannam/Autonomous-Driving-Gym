@@ -13,11 +13,13 @@ from tools.repo_layout import (  # noqa: E402
     ALPHAZERO_BASED_ROOT,
     ALPHAZERO_META_ADVERSARIAL_ROOT,
     HIGHWAY_ENV_ROOT,
+    SOURCE_ROOT,
     prepend_sys_path,
 )
 
 
 prepend_sys_path(
+    SOURCE_ROOT,
     HIGHWAY_ENV_ROOT,
     ALPHAZERO_ADVERSARIAL_ROOT,
     ALPHAZERO_BASED_ROOT,

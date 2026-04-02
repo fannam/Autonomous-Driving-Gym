@@ -5,6 +5,6 @@ __pycache__/
 .DS_Store
 .venv/
 *.egg-info/
-AlphaZero-based-autonomous-driving/outputs/
-AlphaZero-adversarial-autonomous-driving/models/
-AlphaZero-meta-adversarial-autonomous-driving/models/
+legacy/AlphaZero-based-autonomous-driving/outputs/
+source/AlphaZero-adversarial-autonomous-driving/models/
+source/AlphaZero-meta-adversarial-autonomous-driving/models/

@@ -5,11 +5,12 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
 export MPLBACKEND="${MPLBACKEND:-Agg}"
+export PYTHONPATH="$REPO_ROOT/source/highway-env:$REPO_ROOT/legacy/AlphaZero-based-autonomous-driving${PYTHONPATH:+:$PYTHONPATH}"
 export ALPHAZERO_SCENARIO="highway"
 export ALPHAZERO_CONFIG_PATH="$REPO_ROOT/configs/highway.yaml"
 
-TRAINING_OUTPUT_ROOT_DEFAULT="$REPO_ROOT/AlphaZero-based-autonomous-driving/outputs/progressive_training/highway"
-SELF_PLAY_OUTPUT_ROOT_DEFAULT="$REPO_ROOT/AlphaZero-based-autonomous-driving/outputs/progressive_self_play/highway"
+TRAINING_OUTPUT_ROOT_DEFAULT="$REPO_ROOT/legacy/AlphaZero-based-autonomous-driving/outputs/progressive_training/highway"
+SELF_PLAY_OUTPUT_ROOT_DEFAULT="$REPO_ROOT/legacy/AlphaZero-based-autonomous-driving/outputs/progressive_self_play/highway"
 BOOTSTRAP_MODEL_PATH_DEFAULT="$TRAINING_OUTPUT_ROOT_DEFAULT/model_iter_0000.pth"
 
 find_latest_model() {
@@ -57,7 +58,7 @@ RESULT_TIMEOUT="${RESULT_TIMEOUT:-}"
 
 cmd=(
   uv run python
-  AlphaZero-based-autonomous-driving/AlphaZero/scripts/progressive_self_play.py
+  legacy/AlphaZero-based-autonomous-driving/AlphaZero/scripts/progressive_self_play.py
   --iteration "$ITERATION"
   --output-root "$OUTPUT_ROOT"
   --bootstrap-model-path "$BOOTSTRAP_MODEL_PATH"

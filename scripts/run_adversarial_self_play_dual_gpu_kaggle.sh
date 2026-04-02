@@ -15,8 +15,8 @@ UPGRADE_PIP="${UPGRADE_PIP:-0}"
 LOG_FILE="${LOG_FILE:-}"
 
 export ALPHAZERO_ADVERSARIAL_SCENARIO="${ALPHAZERO_ADVERSARIAL_SCENARIO:-racetrack_adversarial}"
-export ALPHAZERO_ADVERSARIAL_CONFIG_PATH="${ALPHAZERO_ADVERSARIAL_CONFIG_PATH:-$REPO_ROOT/AlphaZero-adversarial-autonomous-driving/configs/racetrack_adversarial.yaml}"
-export PYTHONPATH="$REPO_ROOT/highway-env:$REPO_ROOT/AlphaZero-adversarial-autonomous-driving${PYTHONPATH:+:$PYTHONPATH}"
+export ALPHAZERO_ADVERSARIAL_CONFIG_PATH="${ALPHAZERO_ADVERSARIAL_CONFIG_PATH:-$REPO_ROOT/source/AlphaZero-adversarial-autonomous-driving/configs/racetrack_adversarial.yaml}"
+export PYTHONPATH="$REPO_ROOT/source:$REPO_ROOT/source/highway-env:$REPO_ROOT/source/AlphaZero-adversarial-autonomous-driving${PYTHONPATH:+:$PYTHONPATH}"
 
 OUTPUT_DIR="${OUTPUT_DIR:-/kaggle/working/alphazero_adversarial_self_play}"
 WORKERS="${WORKERS:-2}"
@@ -74,13 +74,13 @@ if [[ "$INSTALL_DEPS" == "1" ]]; then
   ensure_python_module numpy "numpy>=1.26.0"
   ensure_python_module torch "torch"
 
-  install_local_editable "$REPO_ROOT/highway-env"
-  install_local_editable "$REPO_ROOT/AlphaZero-adversarial-autonomous-driving"
+  install_local_editable "$REPO_ROOT/source/highway-env"
+  install_local_editable "$REPO_ROOT/source/AlphaZero-adversarial-autonomous-driving"
 fi
 
 cmd=(
   "$PYTHON_BIN"
-  AlphaZero-adversarial-autonomous-driving/AlphaZeroAdversarial/scripts/self_play_kaggle_dual_gpu.py
+  source/AlphaZero-adversarial-autonomous-driving/AlphaZeroAdversarial/scripts/self_play_kaggle_dual_gpu.py
   --workers "$WORKERS"
   --device "$DEVICE"
   --episodes-per-shard "$EPISODES_PER_SHARD"

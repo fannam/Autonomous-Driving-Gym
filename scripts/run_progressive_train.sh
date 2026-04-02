@@ -3,9 +3,10 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
+export PYTHONPATH="$REPO_ROOT/source/highway-env:$REPO_ROOT/legacy/AlphaZero-based-autonomous-driving${PYTHONPATH:+:$PYTHONPATH}"
 
-SELF_PLAY_OUTPUT_ROOT_DEFAULT="$REPO_ROOT/AlphaZero-based-autonomous-driving/outputs/progressive_self_play"
-TRAINING_OUTPUT_ROOT_DEFAULT="$REPO_ROOT/AlphaZero-based-autonomous-driving/outputs/progressive_training"
+SELF_PLAY_OUTPUT_ROOT_DEFAULT="$REPO_ROOT/legacy/AlphaZero-based-autonomous-driving/outputs/progressive_self_play"
+TRAINING_OUTPUT_ROOT_DEFAULT="$REPO_ROOT/legacy/AlphaZero-based-autonomous-driving/outputs/progressive_training"
 
 find_latest_batch() {
   find "$SELF_PLAY_OUTPUT_ROOT_DEFAULT" -mindepth 1 -maxdepth 1 -type d -name 'iter_*' 2>/dev/null \
@@ -89,7 +90,7 @@ BATCH_SIZE="${BATCH_SIZE:-32}"
 
 cmd=(
   uv run python
-  AlphaZero-based-autonomous-driving/AlphaZero/scripts/progressive_train.py
+  legacy/AlphaZero-based-autonomous-driving/AlphaZero/scripts/progressive_train.py
   --iteration "$ITERATION"
   --model-in "$MODEL_IN"
   --batch-dir "$BATCH_DIR"

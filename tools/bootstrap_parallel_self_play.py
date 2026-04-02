@@ -15,10 +15,10 @@ from pathlib import Path
 
 DEFAULT_REPO_URL = "https://github.com/fannam/Autonomous-Driving-Gym.git"
 SELF_PLAY_SCRIPT = Path(
-    "AlphaZero-based-autonomous-driving/AlphaZero/scripts/self_play_parallel.py"
+    "legacy/AlphaZero-based-autonomous-driving/AlphaZero/scripts/self_play_parallel.py"
 )
 DEFAULT_OUTPUT_DIR = Path(
-    "AlphaZero-based-autonomous-driving/outputs/self_play_parallel"
+    "legacy/AlphaZero-based-autonomous-driving/outputs/self_play_parallel"
 )
 DEFAULT_ERROR_TAIL_LINES = 60
 DEFAULT_CPU_RESULT_TIMEOUT_SECONDS = 14_400
@@ -80,7 +80,7 @@ def run_command(
 def is_repo_root(path: Path) -> bool:
     return (
         (path / "pyproject.toml").exists()
-        and (path / "highway-env" / "pyproject.toml").exists()
+        and (path / "source" / "highway-env" / "pyproject.toml").exists()
         and (path / SELF_PLAY_SCRIPT).exists()
     )
 
@@ -225,7 +225,7 @@ def install_with_pip(repo_dir: Path, *, venv_dir: Path | None, quiet: bool) -> P
         success_message="Upgraded pip in the virtual environment.",
     )
     run_command(
-        [str(python_bin), "-m", "pip", "install", "--quiet", "-e", "highway-env"],
+        [str(python_bin), "-m", "pip", "install", "--quiet", "-e", "source/highway-env"],
         cwd=repo_dir,
         env=env,
         quiet=quiet,
@@ -239,7 +239,7 @@ def install_with_pip(repo_dir: Path, *, venv_dir: Path | None, quiet: bool) -> P
             "install",
             "--quiet",
             "-e",
-            "AlphaZero-based-autonomous-driving",
+            "legacy/AlphaZero-based-autonomous-driving",
         ],
         cwd=repo_dir,
         env=env,

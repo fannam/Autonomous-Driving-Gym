@@ -1,0 +1,1 @@
+"""Shared adversarial network helpers."""
