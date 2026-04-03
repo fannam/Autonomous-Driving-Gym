@@ -1,16 +1,14 @@
 # Shell Wrappers
 
-This directory contains optional bash entrypoints that wrap the Python CLIs under `source/` and `legacy/`.
+This directory now keeps only the Kaggle-oriented bash wrappers.
 
-- `run_progressive_*.sh`
-  Legacy single-agent AlphaZero workflows under `legacy/AlphaZero-based-autonomous-driving/`.
-- `run_adversarial_*.sh`
-  Two-agent adversarial workflows under `source/AlphaZero-adversarial-autonomous-driving/`.
-- `run_meta_adversarial_self_play.sh`
-  Meta-adversarial self-play only, with shard/manifest export under `source/AlphaZero-meta-adversarial-autonomous-driving/`.
-- `run_meta_adversarial_train.sh`
-  Meta-adversarial training under `source/AlphaZero-meta-adversarial-autonomous-driving/`.
+- `run_adversarial_self_play_dual_gpu_kaggle.sh`
+  Kaggle dual-GPU self-play wrapper for `source/AlphaZero-adversarial-autonomous-driving/`.
+- `run_meta_adversarial_self_play_dual_gpu_kaggle.sh`
+  Kaggle dual-GPU self-play wrapper for `source/AlphaZero-meta-adversarial-autonomous-driving/`.
+- `run_progressive_self_play_highway_dual_gpu_kaggle.sh`
+  Kaggle dual-GPU self-play wrapper for the legacy `highway` progressive workflow under `legacy/AlphaZero-based-autonomous-driving/`.
 
-If you are on Windows and do not want to run `.sh` files, call the underlying Python entrypoints directly with `uv run python ...` from the repository root.
+All non-Kaggle workflows should call the Python entrypoints directly from the repository root with `uv run python ...`.
 
 Workflow notebooks live under `../notebooks/`.

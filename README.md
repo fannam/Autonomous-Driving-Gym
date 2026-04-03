@@ -101,13 +101,7 @@ uv run python source/AlphaZero-meta-adversarial-autonomous-driving/AlphaZeroMeta
   --episodes-per-iteration 2
 ```
 
-Meta-adversarial self-play export only:
-
-```bash
-bash scripts/run_meta_adversarial_self_play.sh --episodes 4 --episodes-per-shard 2
-```
-
-Equivalent bash wrappers remain under `scripts/`. If you are on Windows, prefer the `uv run python ...` commands directly.
+The remaining bash wrappers under `scripts/` are Kaggle-only entrypoints for the maintained self-play workflows. Outside Kaggle, prefer the `uv run python ...` commands directly. If you are on Windows, use the Python entrypoints instead of `.sh` wrappers.
 
 ## Notes
 
