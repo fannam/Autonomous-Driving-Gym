@@ -62,6 +62,26 @@ The target vector is normalized into `[-1, 1]` and contains:
 - `role_bit`: `+1` for ego, `-1` for NPC
 - `target_type_bit`: `+1` for route-lookahead, `-1` for intercept
 
+## Terminal Outcomes
+
+The shared terminal-state logic lives in `autonomous_driving_shared/alphazero_adversarial/core/game.py`.
+For the default `highway_meta_adversarial` scenario, `remove_npc_on_self_fault=true`, so NPC self-faults assign NPC `-1.0` and remove it from the episode instead of always ending the full episode immediately.
+
+| `reason` | `terminal` | `ego_value` | `npc_value` | Meaning |
+| --- | --- | --- | --- | --- |
+| `ongoing` | `False` | current runtime value, usually `0.0` | current runtime value, usually `0.0` | Episode continues. After an NPC self-fault in the default config, this can be `(0.0, -1.0)` while ego keeps driving. |
+| `ego_finished` | `True` | `+1.0` | `-1.0` | Ego reaches the success condition safely. |
+| `npc_hit_ego` | `True` | `-1.0` | `+1.0` | Direct ego/NPC collision attributed to NPC. |
+| `double_self_collision` | `True` | `-1.0` | `-1.0` | Both agents crash, but not by hitting each other directly. |
+| `ego_self_collision` | `True` | `-1.0` | `0.0` | Ego crashes without NPC earning credit. |
+| `npc_self_collision` | config-dependent | `0.0` | `-1.0` | NPC crashes without rewarding ego. In the default config, NPC is penalized and removed, so the episode continues. |
+| `double_offroad` | `True` | `-1.0` | `-1.0` | Both agents leave the road. |
+| `ego_offroad` | `True` | `-1.0` | `0.0` | Ego leaves the road without NPC earning credit. |
+| `npc_offroad` | config-dependent | `0.0` | `-1.0` | NPC leaves the road without rewarding ego. In the default config, NPC is penalized and removed, so the episode continues. |
+| `ego_timeout_safe` | `True` | `+1.0` | `-1.0` | The time limit is reached while ego remains safe and above `minimum_safe_speed`. |
+| `timeout_draw` | `True` | current runtime value, usually `0.0` | current runtime value, usually `0.0` | Time limit draw. If NPC already self-faulted earlier in the default config, this becomes `(0.0, -1.0)`. |
+| `terminated_draw` | `True` | current runtime value, usually `0.0` | current runtime value, usually `0.0` | Fallback terminal draw that preserves any previously recorded runtime values. |
+
 ## Usage
 
 From the repo root:
