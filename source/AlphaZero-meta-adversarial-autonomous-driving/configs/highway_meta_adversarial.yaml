@@ -91,9 +91,9 @@
       "batch_size": 32,
       "epochs": 10,
       "replay_buffer_size": 4000,
-      "warmup_episodes": 10,
-      "warmup_opponent_policy": "idle",
-      "warmup_collect_opponent_samples": false,
+      "warmup_episodes": 0,
+      "warmup_opponent_policy": null,
+      "warmup_collect_opponent_samples": true,
       "model_path": "models/alphazero_meta_adversarial_highway.pth"
     },
     "inference": {
