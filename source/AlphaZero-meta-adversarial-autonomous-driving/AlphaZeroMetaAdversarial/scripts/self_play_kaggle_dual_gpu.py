@@ -56,7 +56,7 @@ def _parse_gpu_indices(raw_value: str | None) -> list[int] | None:
     return values or None
 
 
-def _resolve_global_worker_offset(args: argparse.Namespace) -> int:
+def _get_global_worker_offset(args: argparse.Namespace) -> int:
     if args.global_worker_offset is not None:
         offset = int(args.global_worker_offset)
     else:
@@ -66,7 +66,7 @@ def _resolve_global_worker_offset(args: argparse.Namespace) -> int:
     return offset
 
 
-def _resolve_worker_devices(args: argparse.Namespace) -> list[str]:
+def _get_worker_devices(args: argparse.Namespace) -> list[str]:
     requested_device = str(args.device).lower()
     if requested_device == "cpu":
         return ["cpu"] * int(args.workers)
@@ -114,7 +114,7 @@ def _resolve_worker_devices(args: argparse.Namespace) -> list[str]:
     ]
 
 
-def _resolve_worker_episode_counts(args: argparse.Namespace) -> list[int]:
+def _get_worker_episode_counts(args: argparse.Namespace) -> list[int]:
     worker_count = int(args.workers)
     if worker_count <= 0:
         raise ValueError("--workers must be a positive integer.")
@@ -141,6 +141,7 @@ def _build_config_from_args(args: argparse.Namespace):
     for field_name, value in (
         ("n_simulations", args.n_simulations),
         ("c_puct", args.c_puct),
+        ("discount_gamma", args.discount_gamma),
         ("temperature", args.temperature),
         ("temperature_drop_step", args.temperature_drop_step),
         ("root_dirichlet_alpha", args.dirichlet_alpha),
@@ -154,13 +155,13 @@ def _build_config_from_args(args: argparse.Namespace):
     return config
 
 
-def _resolve_episode_mode(args: argparse.Namespace, worker_episode_counts: list[int]) -> str:
+def _get_episode_mode(args: argparse.Namespace, worker_episode_counts: list[int]) -> str:
     if args.total_episodes is not None:
         return f"total_episodes={int(sum(worker_episode_counts))}"
     return f"episodes_per_worker={int(args.episodes_per_worker)}"
 
 
-def _resolve_self_play_env_spec(args: argparse.Namespace):
+def _build_self_play_env_spec(args: argparse.Namespace):
     env_overrides = {}
     if args.duration is not None:
         env_overrides["duration"] = int(args.duration)
@@ -473,6 +474,7 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--n-simulations", type=int, default=None)
     parser.add_argument("--c-puct", type=float, default=None)
+    parser.add_argument("--discount-gamma", type=float, default=None)
     parser.add_argument("--temperature", type=float, default=None)
     parser.add_argument("--temperature-drop-step", type=int, default=None)
     parser.add_argument("--dirichlet-alpha", type=float, default=None)
@@ -491,11 +493,11 @@ def main() -> int:
         raise ValueError("--seed-block-size must be a positive integer.")
 
     config = _build_config_from_args(args)
-    env_spec = _resolve_self_play_env_spec(args)
-    worker_devices = _resolve_worker_devices(args)
-    worker_episode_counts = _resolve_worker_episode_counts(args)
-    global_worker_offset = _resolve_global_worker_offset(args)
-    episode_mode = _resolve_episode_mode(args, worker_episode_counts)
+    env_spec = _build_self_play_env_spec(args)
+    worker_devices = _get_worker_devices(args)
+    worker_episode_counts = _get_worker_episode_counts(args)
+    global_worker_offset = _get_global_worker_offset(args)
+    episode_mode = _get_episode_mode(args, worker_episode_counts)
 
     max_worker_episodes = max(worker_episode_counts, default=0)
     if max_worker_episodes >= int(args.seed_block_size):

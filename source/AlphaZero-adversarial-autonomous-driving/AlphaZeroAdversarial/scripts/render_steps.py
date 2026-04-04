@@ -16,9 +16,9 @@ try:
     from AlphaZeroAdversarial.core.game import (
         get_available_actions,
         get_controlled_vehicles,
-        resolve_scripted_action,
+        get_scripted_action,
     )
-    from AlphaZeroAdversarial.core.runtime_config import resolve_scenario_config_path
+    from AlphaZeroAdversarial.core.runtime_config import get_scenario_config_path
     from AlphaZeroAdversarial.environment.config import build_env_spec, init_env
 except ModuleNotFoundError:
     package_root = Path(__file__).resolve().parents[1]
@@ -27,9 +27,9 @@ except ModuleNotFoundError:
     from AlphaZeroAdversarial.core.game import (
         get_available_actions,
         get_controlled_vehicles,
-        resolve_scripted_action,
+        get_scripted_action,
     )
-    from AlphaZeroAdversarial.core.runtime_config import resolve_scenario_config_path
+    from AlphaZeroAdversarial.core.runtime_config import get_scenario_config_path
     from AlphaZeroAdversarial.environment.config import build_env_spec, init_env
 
 
@@ -65,11 +65,11 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _resolve_runtime_config_path(args: argparse.Namespace) -> Path | None:
+def _get_runtime_config_path(args: argparse.Namespace) -> Path | None:
     if args.config_path is not None:
         return Path(args.config_path).expanduser().resolve()
     if args.scenario_name:
-        return resolve_scenario_config_path(str(args.scenario_name))
+        return get_scenario_config_path(str(args.scenario_name))
     return None
 
 
@@ -129,10 +129,10 @@ def _select_agent_action(
     rng: np.random.Generator,
 ) -> int:
     if policy_name == "idle":
-        action = resolve_scripted_action(env, agent_index, "idle")
+        action = get_scripted_action(env, agent_index, "idle")
         if action is None:
             raise RuntimeError(
-                f"Could not resolve idle action for agent_index={agent_index}."
+                f"Could not determine idle action for agent_index={agent_index}."
             )
         return int(action)
     if not available_actions:
@@ -156,7 +156,7 @@ def main() -> int:
         raise ValueError("This adversarial renderer expects exactly 2 controlled vehicles.")
 
     env_overrides = _build_env_overrides(args)
-    config_path = _resolve_runtime_config_path(args)
+    config_path = _get_runtime_config_path(args)
     spec = build_env_spec(
         stage=args.stage,
         scenario_name=args.scenario_name,

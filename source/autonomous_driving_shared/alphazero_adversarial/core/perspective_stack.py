@@ -5,13 +5,19 @@ from typing import Any
 
 import numpy as np
 
-from .game import get_agent_snapshots, get_progress_value, normalize_speed
+from .game import (
+    get_agent_active_mask,
+    get_agent_snapshots,
+    get_progress_value,
+    normalize_speed,
+)
 
 
 @dataclass(frozen=True)
 class AgentPose:
     position: tuple[float, float]
     heading: float
+    active: bool = True
 
 
 @dataclass(frozen=True)
@@ -23,17 +29,42 @@ class PerspectiveHistory:
         return PerspectiveHistory(ego=self.npc, npc=self.ego)
 
 
-def _snapshot_to_pose(snapshot) -> AgentPose:
-    return AgentPose(position=snapshot.position, heading=snapshot.heading)
+def _inactive_pose() -> AgentPose:
+    return AgentPose(position=(0.0, 0.0), heading=0.0, active=False)
+
+
+def _snapshot_to_pose(snapshot, *, active: bool = True) -> AgentPose:
+    if not active:
+        return _inactive_pose()
+    return AgentPose(position=snapshot.position, heading=snapshot.heading, active=True)
+
+
+def _seed_pose_history(pose: AgentPose, history_length: int) -> tuple[AgentPose, ...]:
+    return tuple(pose for _ in range(history_length))
+
+
+def _advance_pose_history(
+    previous_history: tuple[AgentPose, ...],
+    pose: AgentPose,
+    *,
+    active: bool,
+    history_length: int,
+) -> tuple[AgentPose, ...]:
+    if history_length <= 1:
+        return (pose,)
+    if not active:
+        return _seed_pose_history(_inactive_pose(), history_length)
+    return tuple((*previous_history[-(history_length - 1) :], pose))
 
 
 def seed_history_from_env(env, history_length: int) -> PerspectiveHistory:
+    ego_active, npc_active = get_agent_active_mask(env)
     ego_snapshot, npc_snapshot = get_agent_snapshots(env)
-    ego_pose = _snapshot_to_pose(ego_snapshot)
-    npc_pose = _snapshot_to_pose(npc_snapshot)
+    ego_pose = _snapshot_to_pose(ego_snapshot, active=ego_active)
+    npc_pose = _snapshot_to_pose(npc_snapshot, active=npc_active)
     return PerspectiveHistory(
-        ego=tuple(ego_pose for _ in range(history_length)),
-        npc=tuple(npc_pose for _ in range(history_length)),
+        ego=_seed_pose_history(ego_pose, history_length),
+        npc=_seed_pose_history(npc_pose, history_length),
     )
 
 
@@ -42,15 +73,26 @@ def advance_history(
     env,
     history_length: int,
 ) -> PerspectiveHistory:
+    ego_active, npc_active = get_agent_active_mask(env)
     ego_snapshot, npc_snapshot = get_agent_snapshots(env)
-    ego_pose = _snapshot_to_pose(ego_snapshot)
-    npc_pose = _snapshot_to_pose(npc_snapshot)
+    ego_pose = _snapshot_to_pose(ego_snapshot, active=ego_active)
+    npc_pose = _snapshot_to_pose(npc_snapshot, active=npc_active)
     if history_length <= 1:
         return PerspectiveHistory(ego=(ego_pose,), npc=(npc_pose,))
 
     return PerspectiveHistory(
-        ego=tuple((*history.ego[-(history_length - 1) :], ego_pose)),
-        npc=tuple((*history.npc[-(history_length - 1) :], npc_pose)),
+        ego=_advance_pose_history(
+            history.ego,
+            ego_pose,
+            active=ego_active,
+            history_length=history_length,
+        ),
+        npc=_advance_pose_history(
+            history.npc,
+            npc_pose,
+            active=npc_active,
+            history_length=history_length,
+        ),
     )
 
 
@@ -65,17 +107,23 @@ class PerspectiveTensorBuilder:
         env,
         history: PerspectiveHistory,
     ) -> np.ndarray:
+        active_mask = get_agent_active_mask(env)
         observation_type = env.unwrapped.observation_type
         agents_observation_types = getattr(observation_type, "agents_observation_types", None)
         if agents_observation_types is None:
             raise RuntimeError(
                 "Expected a MultiAgentObservation-based environment for adversarial tensor building."
             )
-        observations = observation_type.observe()
-        feature_names_by_agent = tuple(
-            tuple(str(feature_name) for feature_name in getattr(obs_type, "features", ()))
-            for obs_type in agents_observation_types
-        )
+        observations: list[np.ndarray | None] = []
+        feature_names_by_agent: list[tuple[str, ...]] = []
+        for agent_index, obs_type in enumerate(agents_observation_types):
+            feature_names_by_agent.append(
+                tuple(str(feature_name) for feature_name in getattr(obs_type, "features", ()))
+            )
+            if active_mask[agent_index]:
+                observations.append(obs_type.observe())
+            else:
+                observations.append(None)
         ego_tensor = self.build_agent_tensor(
             env=env,
             history=history,
@@ -108,12 +156,15 @@ class PerspectiveTensorBuilder:
         env,
         history: PerspectiveHistory,
         agent_index: int,
-        observation: np.ndarray,
+        observation: np.ndarray | None,
         feature_names: tuple[str, ...],
     ) -> np.ndarray:
         width, height = self.config.grid_shape
         tensor = np.zeros((self.config.plane_count, width, height), dtype=np.float32)
         mirror_y = bool(agent_index == 1 and self.config.flip_npc_perspective)
+        active_mask = get_agent_active_mask(env)
+        if not active_mask[agent_index]:
+            return tensor
 
         ego_snapshot, npc_snapshot = get_agent_snapshots(env)
         if agent_index == 0:
@@ -170,16 +221,20 @@ class PerspectiveTensorBuilder:
         env,
         agent_index: int,
     ) -> np.ndarray:
+        active_mask = get_agent_active_mask(env)
+        if not active_mask[agent_index]:
+            return np.zeros((self.config.target_vector_dim,), dtype=np.float32)
+
         ego_vehicle, npc_vehicle = env.unwrapped.controlled_vehicles[:2]
         self_vehicle = ego_vehicle if agent_index == 0 else npc_vehicle
         mirror_y = bool(agent_index == 1 and self.config.flip_npc_perspective)
 
         if agent_index == 0:
-            target_position, target_velocity = self._resolve_route_target(self_vehicle)
+            target_position, target_velocity = self._get_route_target(self_vehicle)
             role_bit = 1.0
             target_type_bit = 1.0
         else:
-            target_position, target_velocity = self._resolve_intercept_target(
+            target_position, target_velocity = self._get_intercept_target(
                 self_vehicle=self_vehicle,
                 target_vehicle=ego_vehicle,
             )
@@ -221,6 +276,8 @@ class PerspectiveTensorBuilder:
         mirror_y: bool,
     ) -> None:
         for plane_offset, pose in enumerate(poses):
+            if not pose.active:
+                continue
             plane = tensor[channel_offset + plane_offset]
             indices = self._world_to_grid_indices(
                 target_position=np.asarray(pose.position, dtype=np.float32),
@@ -236,10 +293,12 @@ class PerspectiveTensorBuilder:
         self,
         tensor: np.ndarray,
         channel_offset: int,
-        observation: np.ndarray,
+        observation: np.ndarray | None,
         feature_names: tuple[str, ...],
         mirror_y: bool,
     ) -> int:
+        if observation is None:
+            return channel_offset + len(self.config.static_feature_names)
         for feature_name in self.config.static_feature_names:
             if feature_name in feature_names:
                 source_index = feature_names.index(feature_name)
@@ -287,7 +346,7 @@ class PerspectiveTensorBuilder:
     def _velocity_vector(vehicle) -> np.ndarray:
         return np.asarray(getattr(vehicle, "velocity", np.zeros(2)), dtype=np.float32)
 
-    def _resolve_route_target(self, vehicle) -> tuple[np.ndarray, np.ndarray]:
+    def _get_route_target(self, vehicle) -> tuple[np.ndarray, np.ndarray]:
         lookahead_distance = float(
             np.clip(
                 self.config.route_lookahead_base
@@ -331,7 +390,7 @@ class PerspectiveTensorBuilder:
         )
         return np.asarray(target_position, dtype=np.float32), target_velocity
 
-    def _resolve_intercept_target(
+    def _get_intercept_target(
         self,
         *,
         self_vehicle,

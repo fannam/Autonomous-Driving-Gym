@@ -12,10 +12,12 @@ from AlphaZeroAdversarial.core.mcts import (
 from AlphaZeroAdversarial.core.settings import ZeroSumConfig as AdversarialZeroSumConfig
 from AlphaZeroMetaAdversarial.core.game import (
     classify_terminal_state as classify_meta_adversarial,
+    get_agent_active_mask as get_meta_active_mask,
 )
 from AlphaZeroMetaAdversarial.core.mcts import (
     SearchStats as MetaAdversarialSearchStats,
     SimultaneousMCTS as MetaAdversarialMCTS,
+    SimultaneousMCTSNode as MetaAdversarialMCTSNode,
 )
 from AlphaZeroMetaAdversarial.core.settings import (
     ZeroSumConfig as MetaAdversarialZeroSumConfig,
@@ -220,6 +222,66 @@ def test_safe_timeout_rewards_ego(classifier_bundle) -> None:
     assert outcome.reason == "ego_timeout_safe"
     assert outcome.ego_value == pytest.approx(1.0)
     assert outcome.npc_value == pytest.approx(-1.0)
+
+
+def test_meta_npc_self_collision_can_continue_episode_when_configured() -> None:
+    ego_vehicle = DummyVehicle()
+    npc_vehicle = DummyVehicle(crashed=True)
+    env = make_env(ego_vehicle=ego_vehicle, npc_vehicle=npc_vehicle)
+
+    outcome = classify_meta_adversarial(
+        env,
+        MetaAdversarialZeroSumConfig(
+            minimum_safe_speed=5.0,
+            remove_npc_on_self_fault=True,
+        ),
+    )
+
+    assert outcome.terminal is False
+    assert outcome.reason == "npc_self_collision"
+    assert outcome.ego_value == pytest.approx(0.0)
+    assert outcome.npc_value == pytest.approx(-1.0)
+    assert get_meta_active_mask(env) == (True, False)
+
+
+def _make_backprop_node(
+    *,
+    parent=None,
+    parent_joint_action: tuple[int, int] | None = None,
+):
+    node = MetaAdversarialMCTSNode.__new__(MetaAdversarialMCTSNode)
+    node.parent = parent
+    node.parent_joint_action = parent_joint_action
+    node.visit_count = 0
+    node.ego_action_visits = {}
+    node.npc_action_visits = {}
+    node.ego_action_value_sums = {}
+    node.npc_action_value_sums = {}
+    return node
+
+
+def test_backpropagate_recursive_applies_discount_gamma() -> None:
+    root = _make_backprop_node(parent=None, parent_joint_action=None)
+    mid = _make_backprop_node(parent=root, parent_joint_action=(2, 3))
+    leaf = _make_backprop_node(parent=mid, parent_joint_action=(1, 4))
+
+    leaf.backpropagate_recursive(
+        1.0,
+        -1.0,
+        discount_gamma=0.5,
+    )
+
+    assert leaf.visit_count == 1
+    assert mid.visit_count == 1
+    assert root.visit_count == 1
+    assert mid.ego_action_visits[1] == 1
+    assert mid.npc_action_visits[4] == 1
+    assert mid.ego_action_value_sums[1] == pytest.approx(1.0)
+    assert mid.npc_action_value_sums[4] == pytest.approx(-1.0)
+    assert root.ego_action_visits[2] == 1
+    assert root.npc_action_visits[3] == 1
+    assert root.ego_action_value_sums[2] == pytest.approx(0.5)
+    assert root.npc_action_value_sums[3] == pytest.approx(-0.5)
 
 
 def test_adversarial_mcts_predict_keeps_agent_values_separate() -> None:

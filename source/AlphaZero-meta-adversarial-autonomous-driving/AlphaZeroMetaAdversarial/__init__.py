@@ -10,9 +10,9 @@ _REPO_ROOT = Path(__file__).resolve().parents[3]
 _SOURCE_ROOT = _REPO_ROOT / "source"
 
 for path in (_REPO_ROOT, _SOURCE_ROOT):
-    resolved = str(path)
-    if resolved not in sys.path:
-        sys.path.insert(0, resolved)
+    path_str = str(path)
+    if path_str not in sys.path:
+        sys.path.insert(0, path_str)
 
 
 __all__ = ["core", "environment", "network", "training"]

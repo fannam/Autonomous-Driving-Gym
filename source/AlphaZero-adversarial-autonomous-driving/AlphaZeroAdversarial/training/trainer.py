@@ -96,18 +96,16 @@ class AdversarialAlphaZeroTrainer(BaseAdversarialAlphaZeroTrainer):
     def _make_replay_example(
         self,
         sample: EpisodeStepSample,
-        outcome,
+        *,
+        value_target: float,
     ):
         accelerate_target, steering_target = sample.policy_targets
-        value = float(
-            outcome.ego_value if sample.agent_index == 0 else outcome.npc_value
-        )
         return (
             sample.state,
             sample.target_vector,
             accelerate_target,
             steering_target,
-            value,
+            float(value_target),
         )
 
     def _build_training_tensors(self):

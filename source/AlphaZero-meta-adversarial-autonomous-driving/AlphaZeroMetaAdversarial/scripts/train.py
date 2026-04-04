@@ -1,5 +1,6 @@
 import argparse
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 try:
@@ -25,6 +26,7 @@ def parse_args():
     parser.add_argument("--env-seed", type=int, default=10)
     parser.add_argument("--device", type=str, default="auto")
     parser.add_argument("--max-steps", type=int, default=None)
+    parser.add_argument("--discount-gamma", type=float, default=None)
     parser.add_argument("--resume-model", type=str, default=None)
     parser.add_argument("--save-path", type=str, default=None)
     parser.add_argument("--quiet", action="store_true")
@@ -34,6 +36,8 @@ def parse_args():
 def main():
     args = parse_args()
     config = SELF_PLAY_CONFIG
+    if args.discount_gamma is not None:
+        config = replace(config, discount_gamma=float(args.discount_gamma))
     env = init_env(seed=args.env_seed, stage="self_play")
     network = AlphaZeroNetwork(
         input_shape=config.input_shape,

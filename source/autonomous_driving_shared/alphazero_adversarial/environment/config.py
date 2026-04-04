@@ -53,36 +53,36 @@ class EnvironmentManager:
         render_mode: str | None = None,
         env_config_overrides: dict[str, Any] | None = None,
     ) -> EnvironmentSpec:
-        resolved_scenario = scenario_name or self._get_active_scenario_name(
+        scenario_to_use = scenario_name or self._get_active_scenario_name(
             config_path=config_path
         )
         environment = self._get_environment_config(
             stage=stage,
-            scenario_name=resolved_scenario,
+            scenario_name=scenario_to_use,
             config_path=config_path,
         )
         env_id = str(env_name or environment.get("env_id"))
         if not env_id:
             raise ValueError(
-                f"Scenario {resolved_scenario!r} does not define a valid environment id."
+                f"Scenario {scenario_to_use!r} does not define a valid environment id."
             )
 
         base_config = environment.get("config", {})
         if not isinstance(base_config, dict):
             raise ValueError(
-                f"Scenario {resolved_scenario!r} has invalid environment config payload."
+                f"Scenario {scenario_to_use!r} has invalid environment config payload."
             )
         env_config = copy.deepcopy(base_config)
         if env_config_overrides:
             env_config = self._merge_config_dicts(env_config, env_config_overrides)
 
-        resolved_render_mode = (
+        render_mode_to_use = (
             render_mode if render_mode is not None else environment.get("render_mode")
         )
         return EnvironmentSpec(
-            scenario_name=resolved_scenario,
+            scenario_name=scenario_to_use,
             env_id=env_id,
-            render_mode=resolved_render_mode,
+            render_mode=render_mode_to_use,
             config=env_config,
         )
 

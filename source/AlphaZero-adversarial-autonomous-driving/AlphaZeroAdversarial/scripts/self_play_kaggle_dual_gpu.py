@@ -56,7 +56,7 @@ def _parse_gpu_indices(raw_value: str | None) -> list[int] | None:
     return values or None
 
 
-def _resolve_worker_devices(args: argparse.Namespace) -> list[str]:
+def _get_worker_devices(args: argparse.Namespace) -> list[str]:
     requested_device = str(args.device).lower()
     if requested_device == "cpu":
         return ["cpu"] * int(args.workers)
@@ -104,7 +104,7 @@ def _resolve_worker_devices(args: argparse.Namespace) -> list[str]:
     ]
 
 
-def _resolve_worker_episode_counts(args: argparse.Namespace) -> list[int]:
+def _get_worker_episode_counts(args: argparse.Namespace) -> list[int]:
     worker_count = int(args.workers)
     if worker_count <= 0:
         raise ValueError("--workers must be a positive integer.")
@@ -144,13 +144,13 @@ def _build_config_from_args(args: argparse.Namespace):
     return config
 
 
-def _resolve_episode_mode(args: argparse.Namespace, worker_episode_counts: list[int]) -> str:
+def _get_episode_mode(args: argparse.Namespace, worker_episode_counts: list[int]) -> str:
     if args.total_episodes is not None:
         return f"total_episodes={int(sum(worker_episode_counts))}"
     return f"episodes_per_worker={int(args.episodes_per_worker)}"
 
 
-def _resolve_self_play_env_spec(args: argparse.Namespace):
+def _build_self_play_env_spec(args: argparse.Namespace):
     env_overrides = {}
     if args.duration is not None:
         env_overrides["duration"] = int(args.duration)
@@ -474,10 +474,10 @@ def main() -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
 
     config = _build_config_from_args(args)
-    env_spec = _resolve_self_play_env_spec(args)
-    worker_devices = _resolve_worker_devices(args)
-    worker_episode_counts = _resolve_worker_episode_counts(args)
-    episode_mode = _resolve_episode_mode(args, worker_episode_counts)
+    env_spec = _build_self_play_env_spec(args)
+    worker_devices = _get_worker_devices(args)
+    worker_episode_counts = _get_worker_episode_counts(args)
+    episode_mode = _get_episode_mode(args, worker_episode_counts)
 
     if args.episodes_per_shard <= 0:
         raise ValueError("--episodes-per-shard must be a positive integer.")

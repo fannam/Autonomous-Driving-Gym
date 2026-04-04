@@ -12,21 +12,24 @@ import torch.optim as optim
 from ..core.game import (
     TerminalOutcome,
     classify_terminal_state,
+    get_agent_active_mask,
     get_agent_snapshots,
+    get_agent_terminal_values,
     get_available_actions,
     get_progress_value,
+    reset_agent_runtime_state,
 )
 from ..core.mcts import SimultaneousMCTSNode
 from ..core.perspective_stack import PerspectiveTensorBuilder
 
 
-def _resolve_training_device(device) -> torch.device:
+def _get_training_device(device) -> torch.device:
     if device is None or str(device).lower() == "auto":
         return torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    resolved = torch.device(device)
-    if resolved.type == "cuda" and not torch.cuda.is_available():
+    device_obj = torch.device(device)
+    if device_obj.type == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("Requested CUDA device, but CUDA is not available.")
-    return resolved
+    return device_obj
 
 
 @dataclass(frozen=True)
@@ -50,7 +53,7 @@ class BaseAdversarialAlphaZeroTrainer:
         add_root_dirichlet_noise: bool = True,
     ):
         self.config = config
-        self.device = _resolve_training_device(device)
+        self.device = _get_training_device(device)
         self.network = network.to(self.device)
         self.env = env
         self.verbose = bool(verbose)
@@ -176,7 +179,7 @@ class BaseAdversarialAlphaZeroTrainer:
 
         if not candidate_actions:
             raise RuntimeError(
-                f"Could not resolve any valid actions for agent_index={agent_index}."
+                f"Could not determine any valid actions for agent_index={agent_index}."
             )
 
         uniform_probability = 1.0 / len(candidate_actions)
@@ -185,7 +188,7 @@ class BaseAdversarialAlphaZeroTrainer:
             for action in candidate_actions
         }
 
-    def _resolve_valid_policy(
+    def _ensure_valid_policy(
         self,
         *,
         policy_dict: dict[int, float],
@@ -220,6 +223,14 @@ class BaseAdversarialAlphaZeroTrainer:
             return False
 
         if root_node.terminal_outcome.terminal != outcome.terminal:
+            return False
+
+        try:
+            if get_agent_active_mask(self._require_env()) != get_agent_active_mask(root_env):
+                return False
+            if get_agent_terminal_values(self._require_env()) != get_agent_terminal_values(root_env):
+                return False
+        except Exception:
             return False
 
         try:
@@ -277,8 +288,53 @@ class BaseAdversarialAlphaZeroTrainer:
         if terminal_outcome.terminal:
             return terminal_outcome
         if max_steps_reached:
-            return TerminalOutcome(True, 0.0, 0.0, "max_steps_draw")
-        return TerminalOutcome(True, 0.0, 0.0, "unfinished_draw")
+            return TerminalOutcome(
+                True,
+                float(terminal_outcome.ego_value),
+                float(terminal_outcome.npc_value),
+                "max_steps_draw",
+            )
+        return TerminalOutcome(
+            True,
+            float(terminal_outcome.ego_value),
+            float(terminal_outcome.npc_value),
+            "unfinished_draw",
+        )
+
+    def _discount_gamma(self) -> float:
+        gamma = float(getattr(self.config, "discount_gamma", 1.0))
+        if not np.isfinite(gamma) or gamma <= 0.0:
+            raise ValueError("discount_gamma must be a positive finite float.")
+        return gamma
+
+    def _value_target_for_sample(
+        self,
+        *,
+        final_value: float,
+        steps_to_outcome: int,
+    ) -> float:
+        return float(final_value) * (self._discount_gamma() ** max(0, int(steps_to_outcome)))
+
+    def _make_replay_examples_for_trajectory(
+        self,
+        samples: list[EpisodeStepSample],
+        *,
+        final_value: float,
+    ) -> list:
+        trajectory_examples = []
+        trajectory_length = len(samples)
+        for sample_index, sample in enumerate(samples):
+            value_target = self._value_target_for_sample(
+                final_value=final_value,
+                steps_to_outcome=trajectory_length - sample_index - 1,
+            )
+            trajectory_examples.append(
+                self._make_replay_example(
+                    sample,
+                    value_target=value_target,
+                )
+            )
+        return trajectory_examples
 
     def _build_policy_target(
         self,
@@ -313,7 +369,8 @@ class BaseAdversarialAlphaZeroTrainer:
     def _make_replay_example(
         self,
         sample: EpisodeStepSample,
-        outcome: TerminalOutcome,
+        *,
+        value_target: float,
     ):
         raise NotImplementedError
 
@@ -331,10 +388,11 @@ class BaseAdversarialAlphaZeroTrainer:
         step_callback=None,
     ) -> dict:
         env = self._require_env()
-        resolved_seed = int(seed)
-        resolved_env_seed = resolved_seed if env_seed is None else int(env_seed)
-        np.random.seed(resolved_seed)
-        env.reset(seed=resolved_env_seed)
+        episode_seed = int(seed)
+        episode_env_seed = episode_seed if env_seed is None else int(env_seed)
+        np.random.seed(episode_seed)
+        env.reset(seed=episode_env_seed)
+        reset_agent_runtime_state(env)
 
         policy_modes = self._policy_modes_for_episode(episode_index)
         collect_npc_samples = self._should_collect_npc_samples(episode_index)
@@ -343,7 +401,9 @@ class BaseAdversarialAlphaZeroTrainer:
         if add_root_dirichlet_noise is None:
             add_root_dirichlet_noise = self.add_root_dirichlet_noise
 
-        episode_samples: list[EpisodeStepSample] = []
+        episode_samples: dict[int, list[EpisodeStepSample]] = {0: [], 1: []}
+        episode_examples = []
+        finalized_agents: set[int] = set()
         step_count = 0
         outcome = root_node.terminal_outcome
 
@@ -367,29 +427,31 @@ class BaseAdversarialAlphaZeroTrainer:
                 agent_index=1,
                 temperature=0.0 if policy_modes[1] is not None else temperature,
             )
-            ego_policy = self._resolve_valid_policy(
+            ego_policy = self._ensure_valid_policy(
                 policy_dict=ego_policy,
                 agent_index=0,
                 policy_modes=policy_modes,
                 root_node=root_node,
             )
-            npc_policy = self._resolve_valid_policy(
+            npc_policy = self._ensure_valid_policy(
                 policy_dict=npc_policy,
                 agent_index=1,
                 policy_modes=policy_modes,
                 root_node=root_node,
             )
 
-            episode_samples.append(
-                self._make_episode_step_sample(
-                    state=state_batch[0],
-                    target_vector=target_vector_batch[0],
-                    policy_dict=ego_policy,
-                    agent_index=0,
+            active_mask = get_agent_active_mask(env)
+            if active_mask[0]:
+                episode_samples[0].append(
+                    self._make_episode_step_sample(
+                        state=state_batch[0],
+                        target_vector=target_vector_batch[0],
+                        policy_dict=ego_policy,
+                        agent_index=0,
+                    )
                 )
-            )
-            if collect_npc_samples:
-                episode_samples.append(
+            if collect_npc_samples and active_mask[1]:
+                episode_samples[1].append(
                     self._make_episode_step_sample(
                         state=state_batch[1],
                         target_vector=target_vector_batch[1],
@@ -400,11 +462,32 @@ class BaseAdversarialAlphaZeroTrainer:
 
             choose_action = self._sample_action if sample_actions and temperature > 1e-8 else self._greedy_action
             ego_action = choose_action(ego_policy)
-            npc_action = choose_action(npc_policy) if policy_modes[1] is None else self._greedy_action(npc_policy)
+            npc_action = (
+                choose_action(npc_policy)
+                if policy_modes[1] is None
+                else self._greedy_action(npc_policy)
+            )
             joint_action = (ego_action, npc_action)
             env.step(joint_action)
             step_count += 1
             post_step_outcome = classify_terminal_state(env, self.config.zero_sum)
+
+            agent_terminal_values = get_agent_terminal_values(env)
+            for agent_index, terminal_value in enumerate(agent_terminal_values):
+                if agent_index in finalized_agents or terminal_value is None:
+                    continue
+                if agent_index == 1 and not collect_npc_samples:
+                    episode_samples[agent_index] = []
+                    finalized_agents.add(agent_index)
+                    continue
+                episode_examples.extend(
+                    self._make_replay_examples_for_trajectory(
+                        episode_samples[agent_index],
+                        final_value=float(terminal_value),
+                    )
+                )
+                episode_samples[agent_index] = []
+                finalized_agents.add(agent_index)
 
             if step_callback is not None:
                 step_callback(
@@ -439,24 +522,34 @@ class BaseAdversarialAlphaZeroTrainer:
         )
         self.last_episode_outcome = outcome
 
-        episode_examples = [
-            self._make_replay_example(sample, outcome)
-            for sample in episode_samples
-        ]
+        for agent_index, final_value in enumerate((outcome.ego_value, outcome.npc_value)):
+            if agent_index in finalized_agents:
+                continue
+            if agent_index == 1 and not collect_npc_samples:
+                continue
+            episode_examples.extend(
+                self._make_replay_examples_for_trajectory(
+                    episode_samples[agent_index],
+                    final_value=float(final_value),
+                )
+            )
+            episode_samples[agent_index] = []
+            finalized_agents.add(agent_index)
 
         if store_in_replay:
             self.replay_buffer.extend(episode_examples)
 
+        collected_samples = len(episode_examples) if (store_in_replay or return_examples) else 0
         summary = {
-            "seed": resolved_seed,
-            "env_seed": resolved_env_seed,
+            "seed": episode_seed,
+            "env_seed": episode_env_seed,
             "episode_index": int(episode_index),
             "steps": int(step_count),
             "outcome_reason": outcome.reason,
             "ego_value": float(outcome.ego_value),
             "npc_value": float(outcome.npc_value),
             "policy_modes": policy_modes,
-            "collected_samples": len(episode_samples) if store_in_replay else 0,
+            "collected_samples": int(collected_samples),
         }
         if return_examples:
             summary["episode_examples"] = episode_examples

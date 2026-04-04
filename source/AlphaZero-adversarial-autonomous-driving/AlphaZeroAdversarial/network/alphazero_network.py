@@ -22,35 +22,35 @@ class AlphaZeroNetwork(BaseAlphaZeroNetwork):
         target_vector_dim=0,
         target_hidden_dim=32,
     ):
-        resolved_n_actions = int(n_actions)
-        resolved_axis_0 = None if n_action_axis_0 is None else int(n_action_axis_0)
-        resolved_axis_1 = None if n_action_axis_1 is None else int(n_action_axis_1)
-        if resolved_axis_0 is None and resolved_axis_1 is None:
-            inferred_axis = int(round(float(resolved_n_actions) ** 0.5))
-            if inferred_axis * inferred_axis != resolved_n_actions:
+        action_count = int(n_actions)
+        action_axis_0 = None if n_action_axis_0 is None else int(n_action_axis_0)
+        action_axis_1 = None if n_action_axis_1 is None else int(n_action_axis_1)
+        if action_axis_0 is None and action_axis_1 is None:
+            inferred_axis = int(round(float(action_count) ** 0.5))
+            if inferred_axis * inferred_axis != action_count:
                 raise ValueError(
                     "n_actions is not a perfect square; "
                     "provide n_action_axis_0 and n_action_axis_1 explicitly."
                 )
-            resolved_axis_0 = inferred_axis
-            resolved_axis_1 = inferred_axis
-        elif resolved_axis_0 is None:
-            if resolved_n_actions % resolved_axis_1 != 0:
+            action_axis_0 = inferred_axis
+            action_axis_1 = inferred_axis
+        elif action_axis_0 is None:
+            if action_count % action_axis_1 != 0:
                 raise ValueError(
                     "n_actions must be divisible by n_action_axis_1 when inferring axis 0."
                 )
-            resolved_axis_0 = resolved_n_actions // resolved_axis_1
-        elif resolved_axis_1 is None:
-            if resolved_n_actions % resolved_axis_0 != 0:
+            action_axis_0 = action_count // action_axis_1
+        elif action_axis_1 is None:
+            if action_count % action_axis_0 != 0:
                 raise ValueError(
                     "n_actions must be divisible by n_action_axis_0 when inferring axis 1."
                 )
-            resolved_axis_1 = resolved_n_actions // resolved_axis_0
+            action_axis_1 = action_count // action_axis_0
 
-        if resolved_axis_0 * resolved_axis_1 != resolved_n_actions:
+        if action_axis_0 * action_axis_1 != action_count:
             raise ValueError(
                 "Factorized action axes do not match n_actions: "
-                f"{resolved_axis_0} * {resolved_axis_1} != {resolved_n_actions}."
+                f"{action_axis_0} * {action_axis_1} != {action_count}."
             )
 
         super().__init__(
@@ -61,9 +61,9 @@ class AlphaZeroNetwork(BaseAlphaZeroNetwork):
             target_vector_dim=target_vector_dim,
             target_hidden_dim=target_hidden_dim,
         )
-        self.n_actions = resolved_n_actions
-        self.n_action_axis_0 = resolved_axis_0
-        self.n_action_axis_1 = resolved_axis_1
+        self.n_actions = action_count
+        self.n_action_axis_0 = action_axis_0
+        self.n_action_axis_1 = action_axis_1
 
         self.shared_head_conv = nn.Conv2d(self.channels, 4, kernel_size=1)
         self.shared_head_bn = nn.BatchNorm2d(4)

@@ -246,12 +246,12 @@ def run_render_smoke_test(
 ) -> dict[str, Any]:
     config = load_config(config_path)
     env_id, config_render_mode, env_config = get_environment_payload(config)
-    resolved_render_mode = config_render_mode if render_mode is None else render_mode
+    render_mode_to_use = config_render_mode if render_mode is None else render_mode
 
     env = gym.make(
         env_id,
         config=copy.deepcopy(env_config),
-        render_mode=resolved_render_mode,
+        render_mode=render_mode_to_use,
     )
 
     try:
@@ -266,7 +266,7 @@ def run_render_smoke_test(
             scaling=scaling,
         )
         frame = env.render()
-        initial_render = inspect_render_result(frame, "reset", resolved_render_mode)
+        initial_render = inspect_render_result(frame, "reset", render_mode_to_use)
 
         rollout_steps = 0
         terminated = False
@@ -286,7 +286,7 @@ def run_render_smoke_test(
             render_info = inspect_render_result(
                 frame,
                 f"step {step_index + 1}",
-                resolved_render_mode,
+                render_mode_to_use,
             )
             rollout_steps += 1
             step_records.append(
@@ -306,7 +306,7 @@ def run_render_smoke_test(
         return {
             "config_path": str(config_path),
             "env_id": env_id,
-            "render_mode": resolved_render_mode,
+            "render_mode": render_mode_to_use,
             "seed": int(seed),
             "requested_steps": int(steps),
             "executed_steps": int(rollout_steps),

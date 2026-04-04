@@ -6,10 +6,13 @@ from autonomous_driving_shared.alphazero_adversarial.core.mcts import (
     BaseSimultaneousMCTS,
     SearchStats,
     SimultaneousMCTSNode,
+    _get_device,
     _argmax_action,
     _prune_actions_by_relative_threshold,
-    _resolve_device,
     _select_top_actions,
+)
+from autonomous_driving_shared.alphazero_adversarial.core.game import (
+    apply_terminal_value_overrides,
 )
 
 from .policy import outer_product_policy
@@ -92,6 +95,11 @@ class SimultaneousMCTS(BaseSimultaneousMCTS):
         )
 
         ego_value, npc_value = self._clip_value_batch(value_batch)
+        ego_value, npc_value = apply_terminal_value_overrides(
+            getattr(node, "env", None),
+            ego_value,
+            npc_value,
+        )
         return ego_policy, npc_policy, ego_value, npc_value
 
 
@@ -99,8 +107,8 @@ __all__ = [
     "SearchStats",
     "SimultaneousMCTS",
     "SimultaneousMCTSNode",
+    "_get_device",
     "_argmax_action",
     "_prune_actions_by_relative_threshold",
-    "_resolve_device",
     "_select_top_actions",
 ]

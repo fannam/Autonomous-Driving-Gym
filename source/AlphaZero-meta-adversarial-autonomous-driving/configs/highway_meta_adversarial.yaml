@@ -69,7 +69,8 @@
         "include_target_type_bit": true
       },
       "zero_sum": {
-        "minimum_safe_speed": 5.0
+        "minimum_safe_speed": 5.0,
+        "remove_npc_on_self_fault": true
       },
       "n_actions": 5,
       "n_residual_layers": 10,
@@ -78,6 +79,7 @@
       "target_hidden_dim": 32,
       "c_puct": 1.0,
       "n_simulations": 250,
+      "discount_gamma": 0.99,
       "temperature": 1.0,
       "temperature_drop_step": 16,
       "root_dirichlet_alpha": 0.3,
@@ -115,7 +117,8 @@
         "include_target_type_bit": true
       },
       "zero_sum": {
-        "minimum_safe_speed": 5.0
+        "minimum_safe_speed": 5.0,
+        "remove_npc_on_self_fault": true
       },
       "n_actions": 5,
       "n_residual_layers": 10,
@@ -124,6 +127,7 @@
       "target_hidden_dim": 32,
       "c_puct": 1.0,
       "n_simulations": 250,
+      "discount_gamma": 0.99,
       "temperature": 0.0,
       "temperature_drop_step": 0,
       "root_dirichlet_alpha": 0.3,
@@ -161,7 +165,8 @@
         "include_target_type_bit": true
       },
       "zero_sum": {
-        "minimum_safe_speed": 5.0
+        "minimum_safe_speed": 5.0,
+        "remove_npc_on_self_fault": true
       },
       "n_actions": 5,
       "n_residual_layers": 10,
@@ -170,6 +175,7 @@
       "target_hidden_dim": 32,
       "c_puct": 1.0,
       "n_simulations": 250,
+      "discount_gamma": 0.99,
       "temperature": 0.0,
       "temperature_drop_step": 0,
       "root_dirichlet_alpha": 0.3,

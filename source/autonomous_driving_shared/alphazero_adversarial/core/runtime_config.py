@@ -47,7 +47,7 @@ class RuntimeConfigManager:
             directory / f"{normalized_name}.yml",
         )
 
-    def resolve_scenario_config_path(
+    def get_scenario_config_path(
         self,
         scenario_name: str,
         config_dir: str | os.PathLike[str] | None = None,
@@ -64,22 +64,24 @@ class RuntimeConfigManager:
             f"No config file found for scenario {scenario_name!r}. Expected one of: {expected}"
         )
 
-    def resolve_config_path(
+    def get_config_path(
         self,
         config_path: str | os.PathLike[str] | None = None,
     ) -> Path:
         raw_path = config_path or os.environ.get(self.config_path_env_var)
         if raw_path is not None:
-            resolved = Path(raw_path).expanduser().resolve()
+            selected_path = Path(raw_path).expanduser().resolve()
         else:
             scenario_name = os.environ.get(
                 self.scenario_env_var,
                 self.default_scenario_name,
             )
-            resolved = self.resolve_scenario_config_path(scenario_name)
-        if not resolved.exists():
-            raise FileNotFoundError(f"Configuration file does not exist: {resolved}")
-        return resolved
+            selected_path = self.get_scenario_config_path(scenario_name)
+        if not selected_path.exists():
+            raise FileNotFoundError(
+                f"Configuration file does not exist: {selected_path}"
+            )
+        return selected_path
 
     def _load_serialized_config(self, path: Path) -> dict[str, Any]:
         text = path.read_text(encoding="utf-8")
@@ -110,7 +112,7 @@ class RuntimeConfigManager:
         *,
         reload: bool = False,
     ) -> dict[str, Any]:
-        path = self.resolve_config_path(config_path)
+        path = self.get_config_path(config_path)
         if reload:
             self._load_runtime_config_cached.cache_clear()
         return copy.deepcopy(self._load_runtime_config_cached(str(path)))
@@ -152,7 +154,7 @@ class RuntimeConfigManager:
         raw_config: dict[str, Any] | None = None,
     ) -> str:
         path = (
-            self.resolve_config_path(config_path)
+            self.get_config_path(config_path)
             if (config_path is not None or raw_config is None)
             else None
         )
@@ -175,18 +177,18 @@ class RuntimeConfigManager:
         raw_config: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         path = (
-            self.resolve_config_path(config_path)
+            self.get_config_path(config_path)
             if (config_path is not None or raw_config is None)
             else None
         )
         loaded = raw_config or self.load_runtime_config(path)
-        resolved_name = self._infer_scenario_name(loaded, path)
-        expected_name = scenario_name or resolved_name
-        if expected_name != resolved_name:
+        declared_scenario_name = self._infer_scenario_name(loaded, path)
+        expected_name = scenario_name or declared_scenario_name
+        if expected_name != declared_scenario_name:
             config_label = str(path) if path is not None else "the loaded config"
             raise KeyError(
                 f"Scenario {expected_name!r} does not match {config_label}, "
-                f"which declares {resolved_name!r}."
+                f"which declares {declared_scenario_name!r}."
             )
         return copy.deepcopy(loaded)
 

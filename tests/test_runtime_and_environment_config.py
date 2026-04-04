@@ -1,14 +1,15 @@
 from __future__ import annotations
 
 from AlphaZeroAdversarial.core.runtime_config import (
-    resolve_scenario_config_path as resolve_adversarial_config_path,
+    get_scenario_config_path as get_adversarial_config_path,
 )
 from AlphaZeroAdversarial.environment.config import (
     build_env_spec as build_adversarial_env_spec,
 )
 from AlphaZeroMetaAdversarial.core.runtime_config import (
-    resolve_scenario_config_path as resolve_meta_config_path,
+    get_scenario_config_path as get_meta_config_path,
 )
+from AlphaZeroMetaAdversarial.core.settings import SELF_PLAY_CONFIG as META_SELF_PLAY_CONFIG
 from AlphaZeroMetaAdversarial.environment.config import (
     build_env_spec as build_meta_env_spec,
 )
@@ -18,22 +19,22 @@ from tools.repo_layout import (
 )
 
 
-def test_adversarial_runtime_config_resolves_moved_layout_paths() -> None:
+def test_adversarial_runtime_config_finds_moved_layout_paths() -> None:
     expected = (
         ALPHAZERO_ADVERSARIAL_ROOT / "configs" / "racetrack_adversarial.yaml"
     ).resolve()
-    resolved = resolve_adversarial_config_path("racetrack_adversarial")
+    config_path = get_adversarial_config_path("racetrack_adversarial")
 
-    assert resolved == expected
+    assert config_path == expected
 
 
-def test_meta_runtime_config_resolves_moved_layout_paths() -> None:
+def test_meta_runtime_config_finds_moved_layout_paths() -> None:
     expected = (
         ALPHAZERO_META_ADVERSARIAL_ROOT / "configs" / "highway_meta_adversarial.yaml"
     ).resolve()
-    resolved = resolve_meta_config_path("highway_meta_adversarial")
+    config_path = get_meta_config_path("highway_meta_adversarial")
 
-    assert resolved == expected
+    assert config_path == expected
 
 
 def test_build_env_spec_merges_overrides_for_adversarial_config() -> None:
@@ -87,3 +88,8 @@ def test_build_env_spec_accepts_config_path_for_meta_adversarial() -> None:
     assert spec.config["duration"] == 23
     assert spec.config["action"]["action_config"]["type"] == "DiscreteMetaAction"
     assert spec.config["action"]["action_config"]["target_speeds"] == [18, 24, 30]
+
+
+def test_meta_self_play_config_enables_discounted_values_and_npc_removal() -> None:
+    assert abs(float(META_SELF_PLAY_CONFIG.discount_gamma) - 0.99) < 1e-9
+    assert META_SELF_PLAY_CONFIG.zero_sum.remove_npc_on_self_fault is True

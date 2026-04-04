@@ -22,13 +22,13 @@ from .perspective_stack import (
 from .policy import normalize_policy
 
 
-def _resolve_device(device=None) -> torch.device:
+def _get_device(device=None) -> torch.device:
     if device is None or str(device).lower() == "auto":
         return torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    resolved = torch.device(device)
-    if resolved.type == "cuda" and not torch.cuda.is_available():
+    device_obj = torch.device(device)
+    if device_obj.type == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("Requested CUDA device, but CUDA is not available.")
-    return resolved
+    return device_obj
 
 
 def _select_top_actions(
@@ -290,7 +290,13 @@ class SimultaneousMCTSNode:
                 copy_env=False,
             )
 
-    def backpropagate_recursive(self, ego_value: float, npc_value: float) -> None:
+    def backpropagate_recursive(
+        self,
+        ego_value: float,
+        npc_value: float,
+        *,
+        discount_gamma: float = 1.0,
+    ) -> None:
         current = self
         while current is not None:
             current.visit_count += 1
@@ -305,6 +311,8 @@ class SimultaneousMCTSNode:
                 parent.npc_action_value_sums[npc_action] = (
                     parent.npc_action_value_sums.get(npc_action, 0.0) + float(npc_value)
                 )
+                ego_value = float(ego_value) * float(discount_gamma)
+                npc_value = float(npc_value) * float(discount_gamma)
             current = parent
 
 
@@ -322,19 +330,23 @@ class BaseSimultaneousMCTS:
         root_exploration_fraction: float = 0.25,
         max_expand_actions_per_agent: int | None = None,
         relative_pruning_gamma: float | None = None,
+        discount_gamma: float = 1.0,
     ):
         self.root = root
         self.c_puct = float(c_puct)
         self.n_simulations = int(n_simulations)
         self.root_dirichlet_alpha = float(root_dirichlet_alpha)
         self.root_exploration_fraction = float(root_exploration_fraction)
+        self.discount_gamma = float(discount_gamma)
         self.max_expand_actions_per_agent = (
             None
             if max_expand_actions_per_agent is None
             else int(max_expand_actions_per_agent)
         )
         self.relative_pruning_gamma = relative_pruning_gamma
-        self._device = _resolve_device(device)
+        if not np.isfinite(self.discount_gamma) or self.discount_gamma <= 0.0:
+            raise ValueError("discount_gamma must be a positive finite float.")
+        self._device = _get_device(device)
         self._network = network.to(self._device)
         if self._network.training:
             self._network.eval()
@@ -462,6 +474,7 @@ class BaseSimultaneousMCTS:
                 leaf.backpropagate_recursive(
                     leaf.terminal_outcome.ego_value,
                     leaf.terminal_outcome.npc_value,
+                    discount_gamma=self.discount_gamma,
                 )
                 return
 
@@ -486,7 +499,11 @@ class BaseSimultaneousMCTS:
                 max_expand_actions_per_agent=self.max_expand_actions_per_agent,
                 relative_pruning_gamma=self.relative_pruning_gamma,
             )
-            leaf.backpropagate_recursive(ego_value, npc_value)
+            leaf.backpropagate_recursive(
+                ego_value,
+                npc_value,
+                discount_gamma=self.discount_gamma,
+            )
         finally:
             self._stats.rollouts += 1
             self._stats.rollout_time_s += time.perf_counter() - rollout_started_at

@@ -1,22 +1,43 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import numpy as np
 import pytest
 import torch
 
 from highway_env.road.road import Road, RoadNetwork
 from highway_env.vehicle.controller import MDPVehicle
-from AlphaZeroMetaAdversarial.core.perspective_stack import PerspectiveTensorBuilder
-from AlphaZeroMetaAdversarial.core.settings import PerspectiveTensorConfig
+from AlphaZeroMetaAdversarial.core.game import classify_terminal_state
+from AlphaZeroMetaAdversarial.core.perspective_stack import (
+    PerspectiveTensorBuilder,
+    seed_history_from_env,
+)
+from AlphaZeroMetaAdversarial.core.settings import PerspectiveTensorConfig, ZeroSumConfig
 from AlphaZeroMetaAdversarial.network.alphazero_network import AlphaZeroNetwork
 from AlphaZeroMetaAdversarial.scripts.self_play_kaggle_dual_gpu import (
     _serialize_examples,
+)
+from AlphaZeroMetaAdversarial.training.trainer import AdversarialAlphaZeroTrainer
+from autonomous_driving_shared.alphazero_adversarial.training.base import (
+    EpisodeStepSample,
 )
 
 
 class DummyUnwrappedEnv:
     def __init__(self, controlled_vehicles) -> None:
         self.controlled_vehicles = controlled_vehicles
+        self.time = 0.0
+        self.steps = 0
+
+    def _is_success(self) -> bool:
+        return False
+
+    def _is_terminated(self) -> bool:
+        return False
+
+    def _is_truncated(self) -> bool:
+        return False
 
 
 class DummyEnv:
@@ -24,12 +45,12 @@ class DummyEnv:
         self.unwrapped = DummyUnwrappedEnv(controlled_vehicles)
 
 
-def _make_tensor_config() -> PerspectiveTensorConfig:
+def _make_tensor_config(*, history_length: int = 1) -> PerspectiveTensorConfig:
     return PerspectiveTensorConfig(
         grid_shape=(4, 4),
         grid_extent=((-10.0, 10.0), (-10.0, 10.0)),
         grid_step=(5.0, 5.0),
-        history_length=1,
+        history_length=history_length,
         static_feature_names=(),
         include_self_speed_plane=False,
         include_heading_planes=False,
@@ -153,3 +174,86 @@ def test_kaggle_serialization_preserves_target_vectors() -> None:
     assert policy_tensor.shape == (1, policy.shape[0])
     assert value_tensor.shape == (1, 1)
     assert torch.allclose(target_vector_tensor[0], torch.from_numpy(target_vector))
+
+
+def test_inactive_npc_state_is_zero_padded_after_self_fault() -> None:
+    config = _make_tensor_config(history_length=2)
+    builder = PerspectiveTensorBuilder(config)
+    env = _make_dummy_env()
+    ego_vehicle, npc_vehicle = env.unwrapped.controlled_vehicles
+    npc_vehicle.crashed = True
+
+    outcome = classify_terminal_state(
+        env,
+        ZeroSumConfig(
+            minimum_safe_speed=5.0,
+            remove_npc_on_self_fault=True,
+        ),
+    )
+    history = seed_history_from_env(env, config.history_length)
+    empty_observation = np.zeros(
+        (0, config.grid_shape[0], config.grid_shape[1]),
+        dtype=np.float32,
+    )
+
+    ego_tensor = builder.build_agent_tensor(
+        env=env,
+        history=history,
+        agent_index=0,
+        observation=empty_observation,
+        feature_names=(),
+    )
+    npc_tensor = builder.build_agent_tensor(
+        env=env,
+        history=history,
+        agent_index=1,
+        observation=None,
+        feature_names=(),
+    )
+
+    assert outcome.terminal is False
+    assert outcome.reason == "npc_self_collision"
+    assert np.allclose(
+        ego_tensor[config.history_length : 2 * config.history_length],
+        0.0,
+    )
+    assert np.allclose(npc_tensor, 0.0)
+    assert np.allclose(builder.build_target_vector(env, agent_index=1), 0.0)
+    assert ego_vehicle in ego_vehicle.road.vehicles
+    assert npc_vehicle not in ego_vehicle.road.vehicles
+
+
+def test_trainer_builds_discounted_value_targets_per_trajectory() -> None:
+    config = SimpleNamespace(
+        tensor=_make_tensor_config(),
+        learning_rate=1e-3,
+        weight_decay=0.0,
+        replay_buffer_size=16,
+        discount_gamma=0.9,
+    )
+    trainer = AdversarialAlphaZeroTrainer(
+        network=torch.nn.Linear(1, 1),
+        config=config,
+        env=None,
+        device="cpu",
+        verbose=False,
+    )
+    samples = [
+        EpisodeStepSample(
+            state=np.zeros((1, 1, 1), dtype=np.float32),
+            target_vector=np.zeros((config.tensor.target_vector_dim,), dtype=np.float32),
+            policy_targets=(np.asarray([1.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32),),
+            agent_index=0,
+        )
+        for _ in range(3)
+    ]
+
+    examples = trainer._make_replay_examples_for_trajectory(
+        samples,
+        final_value=-1.0,
+    )
+
+    assert len(examples) == 3
+    assert [example[-1] for example in examples] == pytest.approx(
+        [-0.81, -0.9, -1.0]
+    )

@@ -67,6 +67,7 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--n-simulations", type=int, default=None)
     parser.add_argument("--c-puct", type=float, default=None)
+    parser.add_argument("--discount-gamma", type=float, default=None)
     parser.add_argument("--temperature", type=float, default=None)
     parser.add_argument("--temperature-drop-step", type=int, default=None)
     parser.add_argument("--dirichlet-alpha", type=float, default=None)
@@ -77,7 +78,7 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _resolve_output_dir(args: argparse.Namespace) -> Path:
+def _get_output_dir(args: argparse.Namespace) -> Path:
     if args.output_dir is not None:
         output_dir = args.output_dir.expanduser().resolve()
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -105,6 +106,7 @@ def _build_config_from_args(args: argparse.Namespace):
     for field_name, value in (
         ("n_simulations", args.n_simulations),
         ("c_puct", args.c_puct),
+        ("discount_gamma", args.discount_gamma),
         ("temperature", args.temperature),
         ("temperature_drop_step", args.temperature_drop_step),
         ("root_dirichlet_alpha", args.dirichlet_alpha),
@@ -118,7 +120,7 @@ def _build_config_from_args(args: argparse.Namespace):
     return config
 
 
-def _resolve_self_play_env_spec(args: argparse.Namespace):
+def _build_self_play_env_spec(args: argparse.Namespace):
     env_overrides = {}
     if args.duration is not None:
         env_overrides["duration"] = int(args.duration)
@@ -286,9 +288,9 @@ def main() -> int:
     if args.episodes_per_shard <= 0:
         raise ValueError("--episodes-per-shard must be a positive integer.")
 
-    output_dir = _resolve_output_dir(args)
+    output_dir = _get_output_dir(args)
     config = _build_config_from_args(args)
-    env_spec = _resolve_self_play_env_spec(args)
+    env_spec = _build_self_play_env_spec(args)
 
     if args.model_path:
         model_path = Path(args.model_path).expanduser().resolve()

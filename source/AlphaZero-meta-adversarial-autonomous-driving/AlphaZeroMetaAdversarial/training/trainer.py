@@ -29,6 +29,7 @@ class AdversarialAlphaZeroTrainer(BaseAdversarialAlphaZeroTrainer):
             root_exploration_fraction=self.config.root_exploration_fraction,
             max_expand_actions_per_agent=self.config.max_expand_actions_per_agent,
             relative_pruning_gamma=self.config.relative_pruning_gamma,
+            discount_gamma=self.config.discount_gamma,
         )
 
     def _build_policy_target(
@@ -43,17 +44,15 @@ class AdversarialAlphaZeroTrainer(BaseAdversarialAlphaZeroTrainer):
     def _make_replay_example(
         self,
         sample: EpisodeStepSample,
-        outcome,
+        *,
+        value_target: float,
     ):
         (policy_vector,) = sample.policy_targets
-        value = float(
-            outcome.ego_value if sample.agent_index == 0 else outcome.npc_value
-        )
         return (
             sample.state,
             sample.target_vector,
             policy_vector,
-            value,
+            float(value_target),
         )
 
     def _build_training_tensors(self):

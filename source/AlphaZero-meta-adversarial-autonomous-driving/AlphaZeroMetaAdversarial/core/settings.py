@@ -6,10 +6,10 @@ import numpy as np
 
 from .runtime_config import (
     get_active_scenario_name,
+    get_config_path,
     get_environment_config,
     get_stage_preset_config,
     load_runtime_config,
-    resolve_config_path,
 )
 
 
@@ -20,12 +20,12 @@ def compute_grid_shape(grid_size, grid_step) -> tuple[int, int]:
     return tuple(int(axis_cells) for axis_cells in grid_shape)
 
 
-CONFIG_PATH = resolve_config_path()
+CONFIG_PATH = get_config_path()
 RAW_CONFIG = load_runtime_config(CONFIG_PATH)
 ACTIVE_SCENARIO = get_active_scenario_name(raw_config=RAW_CONFIG)
 
 
-def _resolve_observation_metadata(
+def _get_observation_metadata(
     *,
     stage: str,
     scenario_name: str | None = None,
@@ -46,7 +46,7 @@ def _resolve_observation_metadata(
     return grid_size, grid_step, features
 
 
-def _resolve_action_count(
+def _get_action_count(
     *,
     stage: str,
     scenario_name: str | None = None,
@@ -85,13 +85,13 @@ def _resolve_action_count(
     )
 
 
-DEFAULT_GRID_EXTENT, DEFAULT_GRID_STEP, DEFAULT_STATIC_FEATURES = _resolve_observation_metadata(
+DEFAULT_GRID_EXTENT, DEFAULT_GRID_STEP, DEFAULT_STATIC_FEATURES = _get_observation_metadata(
     stage="self_play",
     scenario_name=ACTIVE_SCENARIO,
     raw_config=RAW_CONFIG,
 )
 DEFAULT_GRID_SHAPE = compute_grid_shape(DEFAULT_GRID_EXTENT, DEFAULT_GRID_STEP)
-DEFAULT_N_ACTIONS = _resolve_action_count(
+DEFAULT_N_ACTIONS = _get_action_count(
     stage="self_play",
     scenario_name=ACTIVE_SCENARIO,
     raw_config=RAW_CONFIG,
@@ -213,6 +213,7 @@ class PerspectiveTensorConfig:
 @dataclass(frozen=True)
 class ZeroSumConfig:
     minimum_safe_speed: float = 5.0
+    remove_npc_on_self_fault: bool = False
 
     @classmethod
     def from_dict(cls, raw_config: dict | None = None) -> "ZeroSumConfig":
@@ -230,6 +231,7 @@ class AdversarialAlphaZeroConfig:
     target_hidden_dim: int = 32
     c_puct: float = 2.5
     n_simulations: int = 24
+    discount_gamma: float = 1.0
     temperature: float = 1.0
     temperature_drop_step: int | None = None
     root_dirichlet_alpha: float = 0.3
@@ -257,6 +259,12 @@ class AdversarialAlphaZeroConfig:
             and float(self.relative_pruning_gamma) < 0.0
         ):
             raise ValueError("relative_pruning_gamma must be non-negative or None.")
+        if (
+            not np.isfinite(float(self.discount_gamma))
+            or float(self.discount_gamma) <= 0.0
+            or float(self.discount_gamma) > 1.0
+        ):
+            raise ValueError("discount_gamma must be in the interval (0, 1].")
 
     @classmethod
     def from_dict(
@@ -314,20 +322,20 @@ def load_stage_config(
     raw_config: dict | None = None,
 ) -> AdversarialAlphaZeroConfig:
     loaded = RAW_CONFIG if raw_config is None else raw_config
-    resolved_scenario = scenario_name or get_active_scenario_name(raw_config=loaded)
-    grid_extent, grid_step, static_features = _resolve_observation_metadata(
+    scenario_name_to_use = scenario_name or get_active_scenario_name(raw_config=loaded)
+    grid_extent, grid_step, static_features = _get_observation_metadata(
         stage=stage,
-        scenario_name=resolved_scenario,
+        scenario_name=scenario_name_to_use,
         raw_config=loaded,
     )
-    n_actions = _resolve_action_count(
+    n_actions = _get_action_count(
         stage=stage,
-        scenario_name=resolved_scenario,
+        scenario_name=scenario_name_to_use,
         raw_config=loaded,
     )
     preset = get_stage_preset_config(
         stage=stage,
-        scenario_name=resolved_scenario,
+        scenario_name=scenario_name_to_use,
         raw_config=loaded,
     )
     return AdversarialAlphaZeroConfig.from_dict(
@@ -352,20 +360,20 @@ def reload_settings() -> tuple[
     global DEFAULT_N_ACTIONS
     global SELF_PLAY_CONFIG, INFERENCE_CONFIG, EVALUATION_CONFIG
 
-    CONFIG_PATH = resolve_config_path()
+    CONFIG_PATH = get_config_path()
     RAW_CONFIG = load_runtime_config(CONFIG_PATH, reload=True)
     ACTIVE_SCENARIO = get_active_scenario_name(raw_config=RAW_CONFIG)
     (
         DEFAULT_GRID_EXTENT,
         DEFAULT_GRID_STEP,
         DEFAULT_STATIC_FEATURES,
-    ) = _resolve_observation_metadata(
+    ) = _get_observation_metadata(
         stage="self_play",
         scenario_name=ACTIVE_SCENARIO,
         raw_config=RAW_CONFIG,
     )
     DEFAULT_GRID_SHAPE = compute_grid_shape(DEFAULT_GRID_EXTENT, DEFAULT_GRID_STEP)
-    DEFAULT_N_ACTIONS = _resolve_action_count(
+    DEFAULT_N_ACTIONS = _get_action_count(
         stage="self_play",
         scenario_name=ACTIVE_SCENARIO,
         raw_config=RAW_CONFIG,
