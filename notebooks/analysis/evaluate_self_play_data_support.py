@@ -91,11 +91,51 @@ def flatten_manifest_shards(manifest: dict) -> list[dict]:
     return rows
 
 
-def resolve_shard_path(manifest_path: Path, shard_entry: dict) -> Path:
+def resolve_shard_path(
+    manifest_path: Path,
+    shard_entry: dict,
+    search_roots: list[Path] | None = None,
+) -> Path:
     raw_path = Path(shard_entry["path"]).expanduser()
+    normalized_roots = [Path(root).expanduser().resolve() for root in (search_roots or [])]
+
+    candidate_paths: list[Path] = []
     if raw_path.is_absolute():
-        return raw_path
-    return (manifest_path.parent / raw_path).resolve()
+        candidate_paths.append(raw_path)
+    else:
+        candidate_paths.append((manifest_path.parent / raw_path).resolve())
+    candidate_paths.append((manifest_path.parent / raw_path.name).resolve())
+
+    for root in normalized_roots:
+        if raw_path.is_absolute():
+            candidate_paths.append((root / raw_path.name).resolve())
+        else:
+            candidate_paths.append((root / raw_path).resolve())
+            candidate_paths.append((root / raw_path.name).resolve())
+
+    seen_candidates: set[Path] = set()
+    for candidate in candidate_paths:
+        normalized = candidate.resolve(strict=False)
+        if normalized in seen_candidates:
+            continue
+        seen_candidates.add(normalized)
+        if normalized.exists():
+            return normalized
+
+    for root in [manifest_path.parent.resolve(), *normalized_roots]:
+        if not root.exists():
+            continue
+        matches = sorted(path.resolve() for path in root.rglob(raw_path.name) if path.is_file())
+        if matches:
+            return matches[0]
+
+    checked_paths = "\n".join(f"- {path}" for path in sorted(seen_candidates, key=str))
+    raise FileNotFoundError(
+        "Could not resolve shard path from manifest entry.\n"
+        f"Manifest: {manifest_path}\n"
+        f"Shard entry path: {raw_path}\n"
+        f"Checked candidates:\n{checked_paths}"
+    )
 
 
 def load_raw_runtime_config(manifest: dict) -> dict[str, Any] | None:
@@ -246,6 +286,7 @@ def summarize_manifest(analysis: dict) -> pd.DataFrame:
 
 def _build_sample_frame_flat_meta(
     *,
+    shard_path: Path,
     policies_np: np.ndarray,
     values_np: np.ndarray,
     roles: np.ndarray,
@@ -261,6 +302,8 @@ def _build_sample_frame_flat_meta(
     return pd.DataFrame(
         {
             "policy_format": "flat_meta",
+            "path": str(shard_path),
+            "shard_name": shard_path.name,
             "worker_id": worker_id,
             "global_worker_id": global_worker_id,
             "shard_index": shard_index,
@@ -277,6 +320,7 @@ def _build_sample_frame_flat_meta(
 
 def _build_sample_frame_factorized_axes(
     *,
+    shard_path: Path,
     accelerate_np: np.ndarray,
     steering_np: np.ndarray,
     values_np: np.ndarray,
@@ -313,6 +357,8 @@ def _build_sample_frame_factorized_axes(
     return pd.DataFrame(
         {
             "policy_format": "factorized_axes",
+            "path": str(shard_path),
+            "shard_name": shard_path.name,
             "worker_id": worker_id,
             "global_worker_id": global_worker_id,
             "shard_index": shard_index,
@@ -339,11 +385,35 @@ def _build_sample_frame_factorized_axes(
     )
 
 
-def analyze_manifest(manifest_path: Path) -> dict:
+def analyze_manifest(
+    manifest_path: Path,
+    *,
+    shard_search_roots: list[Path] | None = None,
+    selected_shard_names: list[str] | set[str] | None = None,
+) -> dict:
     manifest = load_manifest(manifest_path)
     shard_entries = flatten_manifest_shards(manifest)
     if not shard_entries:
         raise ValueError(f"Manifest contains no shards: {manifest_path}")
+
+    requested_shard_names = {Path(item).name for item in (selected_shard_names or []) if item}
+    if requested_shard_names:
+        shard_entries = [
+            entry
+            for entry in shard_entries
+            if Path(str(entry.get("path", ""))).name in requested_shard_names
+        ]
+        available_shard_names = {
+            Path(str(entry.get("path", ""))).name
+            for entry in flatten_manifest_shards(manifest)
+        }
+        missing_shard_names = sorted(requested_shard_names - available_shard_names)
+        if missing_shard_names:
+            missing_text = ", ".join(missing_shard_names)
+            raise FileNotFoundError(f"Requested shard(s) not present in manifest: {missing_text}")
+        if not shard_entries:
+            selected_text = ", ".join(sorted(requested_shard_names))
+            raise ValueError(f"No manifest shard entries matched selected_shard_names: {selected_text}")
 
     shard_rows: list[dict] = []
     episode_rows: list[dict] = []
@@ -354,7 +424,11 @@ def analyze_manifest(manifest_path: Path) -> dict:
     factorized_axis_info: dict[str, Any] | None = None
 
     for shard_entry in shard_entries:
-        shard_path = resolve_shard_path(manifest_path, shard_entry)
+        shard_path = resolve_shard_path(
+            manifest_path,
+            shard_entry,
+            search_roots=shard_search_roots,
+        )
         payload = torch.load(shard_path, map_location="cpu")
 
         states = payload["states"]
@@ -382,6 +456,7 @@ def analyze_manifest(manifest_path: Path) -> dict:
 
         row: dict[str, Any] = {
             "path": str(shard_path),
+            "shard_name": shard_path.name,
             "manifest_kind": shard_entry.get("manifest_kind"),
             "worker_id": worker_id,
             "global_worker_id": global_worker_id,
@@ -416,6 +491,7 @@ def analyze_manifest(manifest_path: Path) -> dict:
             )
             sample_frames.append(
                 _build_sample_frame_flat_meta(
+                    shard_path=shard_path,
                     policies_np=policies_np,
                     values_np=values_np,
                     roles=roles,
@@ -463,6 +539,7 @@ def analyze_manifest(manifest_path: Path) -> dict:
             )
             sample_frames.append(
                 _build_sample_frame_factorized_axes(
+                    shard_path=shard_path,
                     accelerate_np=accelerate_np,
                     steering_np=steering_np,
                     values_np=values_np,
@@ -503,6 +580,7 @@ def analyze_manifest(manifest_path: Path) -> dict:
             episode_row.update(
                 {
                     "path": str(shard_path),
+                    "shard_name": shard_path.name,
                     "worker_id": worker_id,
                     "global_worker_id": global_worker_id,
                     "shard_index": shard_index,

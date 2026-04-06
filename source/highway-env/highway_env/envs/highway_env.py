@@ -32,6 +32,7 @@ class HighwayEnv(AbstractEnv):
                     "type": "DiscreteMetaAction",
                 },
                 "lanes_count": 4,
+                "road_speed_limit": 30,
                 "vehicles_count": 50,
                 "controlled_vehicles": 1,
                 "initial_lane_id": None,
@@ -66,7 +67,8 @@ class HighwayEnv(AbstractEnv):
         """Create a road composed of straight adjacent lanes."""
         self.road = Road(
             network=RoadNetwork.straight_road_network(
-                self.config["lanes_count"], speed_limit=30
+                self.config["lanes_count"],
+                speed_limit=float(self.config.get("road_speed_limit", 30)),
             ),
             np_random=self.np_random,
             record_history=self.config["show_trajectories"],

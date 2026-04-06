@@ -12,6 +12,7 @@ from AlphaZeroMetaAdversarial.core.runtime_config import (
 from AlphaZeroMetaAdversarial.core.settings import SELF_PLAY_CONFIG as META_SELF_PLAY_CONFIG
 from AlphaZeroMetaAdversarial.environment.config import (
     build_env_spec as build_meta_env_spec,
+    init_env as init_meta_env,
 )
 from tools.repo_layout import (
     ALPHAZERO_ADVERSARIAL_ROOT,
@@ -74,9 +75,10 @@ def test_build_env_spec_accepts_config_path_for_meta_adversarial() -> None:
         config_path=config_path,
         env_config_overrides={
             "duration": 23,
+            "road_speed_limit": 44,
             "action": {
                 "action_config": {
-                    "target_speeds": [18, 24, 30],
+                    "target_speeds": [18, 22, 26, 30, 34, 38],
                 }
             },
         },
@@ -86,8 +88,27 @@ def test_build_env_spec_accepts_config_path_for_meta_adversarial() -> None:
     assert spec.env_id == "highway-v0"
     assert spec.render_mode == "rgb_array"
     assert spec.config["duration"] == 23
+    assert spec.config["road_speed_limit"] == 44
     assert spec.config["action"]["action_config"]["type"] == "DiscreteMetaAction"
-    assert spec.config["action"]["action_config"]["target_speeds"] == [18, 24, 30]
+    assert spec.config["action"]["action_config"]["target_speeds"] == [18, 22, 26, 30, 34, 38]
+
+
+def test_meta_env_applies_configurable_road_speed_limit() -> None:
+    env = init_meta_env(
+        stage="self_play",
+        env_config_overrides={
+            "duration": 1,
+            "road_speed_limit": 44,
+        },
+    )
+    try:
+        graph = env.unwrapped.road.network.graph
+        start_node = next(iter(graph))
+        end_node = next(iter(graph[start_node]))
+        lane = graph[start_node][end_node][0]
+        assert float(lane.speed_limit) == 44.0
+    finally:
+        env.close()
 
 
 def test_meta_self_play_config_enables_discounted_values_and_npc_removal() -> None:

@@ -26,14 +26,17 @@
           "type": "DiscreteMetaAction",
           "longitudinal": true,
           "lateral": true,
-          "target_speeds": [20, 25, 30]
+          "target_speeds": [18, 22, 26, 30, 34, 38]
         }
       },
+      "other_vehicles_type": "highway_env.vehicle.behavior.IDMVehicle",
+      "road_speed_limit": 40,
       "collision_reward": 0,
       "left_lane_constraint": 0,
       "left_lane_reward": 0,
       "high_speed_reward": 0,
-      "vehicles_density": 1.5,
+      "reward_speed_range": [22, 38],
+      "vehicles_density": 2.25,
       "success_mode": "distance",
       "terminate_on_success": true,
       "success_max_steps": null,
@@ -41,7 +44,7 @@
       "success_speed_range_fraction": 0.75,
       "success_speed_max_fraction": 0.8,
       "controlled_vehicles": 2,
-      "vehicles_count": 20,
+      "vehicles_count": 50,
       "lanes_count": 4,
       "policy_frequency": 1,
       "duration": 40
@@ -69,7 +72,7 @@
         "include_target_type_bit": true
       },
       "zero_sum": {
-        "minimum_safe_speed": 5.0,
+        "minimum_safe_speed": 24.0,
         "remove_npc_on_self_fault": true
       },
       "n_actions": 5,
@@ -117,7 +120,7 @@
         "include_target_type_bit": true
       },
       "zero_sum": {
-        "minimum_safe_speed": 5.0,
+        "minimum_safe_speed": 24.0,
         "remove_npc_on_self_fault": true
       },
       "n_actions": 5,
@@ -165,7 +168,7 @@
         "include_target_type_bit": true
       },
       "zero_sum": {
-        "minimum_safe_speed": 5.0,
+        "minimum_safe_speed": 24.0,
         "remove_npc_on_self_fault": true
       },
       "n_actions": 5,
