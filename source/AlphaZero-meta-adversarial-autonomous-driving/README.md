@@ -25,6 +25,7 @@ This package is a separate AlphaZero-style implementation for a two-agent advers
 - `AlphaZeroMetaAdversarial/scripts/`
   - `self_play.py`: run one self-play episode
   - `self_play_save.py`: run self-play only and save shard/manifest outputs
+  - `replay.py`: replay and render a saved episode from shard/manifest
   - `train.py`: iterative self-play + training
   - `evaluate.py`: greedy evaluation with a saved checkpoint
 
@@ -93,6 +94,7 @@ From the repo root:
 bash scripts/run_meta_adversarial_train.sh --iterations 3 --episodes-per-iteration 2
 bash scripts/run_meta_adversarial_self_play.sh --episodes 4 --episodes-per-shard 2
 uv run python source/AlphaZero-meta-adversarial-autonomous-driving/AlphaZeroMetaAdversarial/scripts/evaluate.py --model-path source/AlphaZero-meta-adversarial-autonomous-driving/models/alphazero_meta_adversarial_highway.pth
+uv run python source/AlphaZero-meta-adversarial-autonomous-driving/AlphaZeroMetaAdversarial/scripts/replay.py --manifest-path source/AlphaZero-meta-adversarial-autonomous-driving/outputs/self_play --episode-index 0
 ```
 
 `bash scripts/run_meta_adversarial_train.sh` is the main end-to-end entrypoint. It lives at the repo root, uses the `highway-env` source from this repo via local editable install and `PYTHONPATH`, and follows the same lightweight install style as the other repo bash scripts.
@@ -111,6 +113,7 @@ When `--model-path` is omitted, it creates and records a bootstrap checkpoint fr
 
 - The action space is the flat `DiscreteMetaAction` set instead of factorized accelerate/steering bins.
 - Self-play shards now store `target_vectors` alongside `states`, `policies`, and `values`.
+- Episode summaries inside shards now include `joint_actions`, and new shards also persist `env_id` + `env_config` so a single shard is enough to replay/render the episode later.
 - Terminal payoffs distinguish direct NPC hits from self-inflicted failures.
 - Direct NPC-to-ego collisions are treated as NPC wins.
 - Ego self-collisions/off-road failures penalize ego without rewarding NPC.

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from types import SimpleNamespace
 
 import numpy as np
@@ -13,7 +14,12 @@ from AlphaZeroMetaAdversarial.core.perspective_stack import (
     PerspectiveTensorBuilder,
     seed_history_from_env,
 )
-from AlphaZeroMetaAdversarial.core.settings import PerspectiveTensorConfig, ZeroSumConfig
+from AlphaZeroMetaAdversarial.core.settings import (
+    PerspectiveTensorConfig,
+    SELF_PLAY_CONFIG,
+    ZeroSumConfig,
+)
+from AlphaZeroMetaAdversarial.environment.config import init_env as init_meta_env
 from AlphaZeroMetaAdversarial.network.alphazero_network import AlphaZeroNetwork
 from AlphaZeroMetaAdversarial.scripts.self_play_kaggle_dual_gpu import (
     _serialize_examples,
@@ -256,4 +262,69 @@ def test_trainer_builds_discounted_value_targets_per_trajectory() -> None:
     assert len(examples) == 3
     assert [example[-1] for example in examples] == pytest.approx(
         [-0.81, -0.9, -1.0]
+    )
+
+
+def test_meta_self_play_summary_includes_joint_action_history() -> None:
+    config = replace(
+        SELF_PLAY_CONFIG,
+        n_residual_layers=1,
+        network_channels=16,
+        target_hidden_dim=8,
+        network_dropout_p=0.0,
+        n_simulations=1,
+        temperature=0.0,
+        max_expand_actions_per_agent=2,
+    )
+    env = init_meta_env(
+        seed=123,
+        stage="self_play",
+        env_config_overrides={
+            "duration": 2,
+            "vehicles_count": 4,
+            "policy_frequency": 1,
+            "simulation_frequency": 5,
+        },
+    )
+    try:
+        network = AlphaZeroNetwork(
+            input_shape=config.input_shape,
+            n_residual_layers=config.n_residual_layers,
+            n_actions=config.n_actions,
+            channels=config.network_channels,
+            dropout_p=config.network_dropout_p,
+            target_vector_dim=config.target_vector_dim,
+            target_hidden_dim=config.target_hidden_dim,
+        )
+        trainer = AdversarialAlphaZeroTrainer(
+            network=network,
+            config=config,
+            env=env,
+            device="cpu",
+            verbose=False,
+            add_root_dirichlet_noise=False,
+        )
+
+        summary = trainer.run_episode(
+            seed=123,
+            env_seed=123,
+            episode_index=0,
+            max_steps=2,
+            store_in_replay=False,
+            add_root_dirichlet_noise=False,
+            sample_actions=False,
+        )
+    finally:
+        env.close()
+
+    joint_actions = summary["joint_actions"]
+    assert summary["steps"] >= 1
+    assert isinstance(joint_actions, list)
+    assert len(joint_actions) == summary["steps"]
+    assert all(isinstance(joint_action, tuple) for joint_action in joint_actions)
+    assert all(len(joint_action) == 2 for joint_action in joint_actions)
+    assert all(
+        isinstance(action, int)
+        for joint_action in joint_actions
+        for action in joint_action
     )

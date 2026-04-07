@@ -212,6 +212,10 @@ def _flush_shard(
     global_worker_id: int,
     shard_index: int,
     output_dir: Path,
+    active_scenario: str,
+    config_path: str,
+    env_id: str,
+    env_config: dict,
 ) -> dict | None:
     if not shard_examples:
         return None
@@ -228,6 +232,10 @@ def _flush_shard(
             "shard_index": int(shard_index),
             "sample_count": int(states.shape[0]),
             "episode_count": len(shard_episode_summaries),
+            "active_scenario": str(active_scenario),
+            "config_path": str(config_path),
+            "env_id": str(env_id),
+            "env_config": env_config,
             "policy_format": "flat_meta",
             "states": states,
             "target_vectors": target_vectors,
@@ -385,6 +393,10 @@ def _run_worker(task: dict) -> dict:
                     global_worker_id=global_worker_id,
                     shard_index=shard_index,
                     output_dir=output_dir,
+                    active_scenario=str(task["active_scenario"]),
+                    config_path=str(task["config_path"]),
+                    env_id=str(task["env_id"]),
+                    env_config=task["env_config"],
                 )
                 if shard_manifest is not None:
                     shard_manifests.append(shard_manifest)
@@ -399,6 +411,10 @@ def _run_worker(task: dict) -> dict:
             global_worker_id=global_worker_id,
             shard_index=shard_index,
             output_dir=output_dir,
+            active_scenario=str(task["active_scenario"]),
+            config_path=str(task["config_path"]),
+            env_id=str(task["env_id"]),
+            env_config=task["env_config"],
         )
         if shard_manifest is not None:
             shard_manifests.append(shard_manifest)
@@ -584,6 +600,8 @@ def main() -> int:
             "output_dir": str(output_dir),
             "model_path": str(model_path),
             "render_mode": None,
+            "active_scenario": ACTIVE_SCENARIO,
+            "config_path": str(CONFIG_PATH),
             "env_id": env_spec.env_id,
             "env_config": env_spec.config,
             "input_shape": tuple(config.input_shape),
@@ -663,6 +681,7 @@ def main() -> int:
         "config_path": str(CONFIG_PATH),
         "active_scenario": ACTIVE_SCENARIO,
         "env_id": env_spec.env_id,
+        "env_config": env_spec.config,
         "scenario_render_mode": env_spec.render_mode,
         "worker_render_mode": None,
         "worker_devices": worker_devices,

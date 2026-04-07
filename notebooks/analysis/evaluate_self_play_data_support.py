@@ -196,6 +196,27 @@ def _format_numeric_label(value: float) -> str:
     return f"{float(value):+.2f}"
 
 
+def normalize_joint_actions(raw_joint_actions: Any) -> list[tuple[int, int]]:
+    if not isinstance(raw_joint_actions, (list, tuple)):
+        return []
+
+    normalized: list[tuple[int, int]] = []
+    for item in raw_joint_actions:
+        if not isinstance(item, (list, tuple)) or len(item) != 2:
+            continue
+        try:
+            ego_action = int(item[0])
+            npc_action = int(item[1])
+        except (TypeError, ValueError):
+            continue
+        normalized.append((ego_action, npc_action))
+    return normalized
+
+
+def meta_action_label(action_id: int) -> str:
+    return META_ACTION_LABELS.get(int(action_id), f"action_{int(action_id)}")
+
+
 def infer_factorized_axis_info(
     manifest: dict,
     *,
@@ -576,6 +597,9 @@ def analyze_manifest(
             episode_sample_count = int(episode.get("sample_count", 0))
             episode_roles = roles[offset : offset + episode_sample_count]
             policy_modes = episode.get("policy_modes")
+            joint_actions = normalize_joint_actions(episode.get("joint_actions"))
+            ego_action_sequence = [int(ego_action) for ego_action, _ in joint_actions]
+            npc_action_sequence = [int(npc_action) for _, npc_action in joint_actions]
             episode_row = dict(episode)
             episode_row.update(
                 {
@@ -595,6 +619,19 @@ def analyze_manifest(
                     "ego_samples": int((episode_roles == "ego").sum()),
                     "npc_samples": int((episode_roles == "npc").sum()),
                     "unknown_role_samples": int((episode_roles == "unknown").sum()),
+                    "joint_actions": joint_actions,
+                    "joint_action_count": int(len(joint_actions)),
+                    "ego_action_sequence": ego_action_sequence,
+                    "npc_action_sequence": npc_action_sequence,
+                    "ego_action_labels": [meta_action_label(action_id) for action_id in ego_action_sequence],
+                    "npc_action_labels": [meta_action_label(action_id) for action_id in npc_action_sequence],
+                    "joint_action_labels": [
+                        (
+                            f"ego={meta_action_label(ego_action)}"
+                            f" | npc={meta_action_label(npc_action)}"
+                        )
+                        for ego_action, npc_action in joint_actions
+                    ],
                 }
             )
             episode_rows.append(episode_row)

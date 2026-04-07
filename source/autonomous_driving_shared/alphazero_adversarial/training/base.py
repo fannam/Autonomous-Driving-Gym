@@ -403,6 +403,7 @@ class BaseAdversarialAlphaZeroTrainer:
 
         episode_samples: dict[int, list[EpisodeStepSample]] = {0: [], 1: []}
         episode_examples = []
+        joint_actions: list[tuple[int, int]] = []
         finalized_agents: set[int] = set()
         step_count = 0
         outcome = root_node.terminal_outcome
@@ -468,6 +469,7 @@ class BaseAdversarialAlphaZeroTrainer:
                 else self._greedy_action(npc_policy)
             )
             joint_action = (ego_action, npc_action)
+            joint_actions.append((int(joint_action[0]), int(joint_action[1])))
             env.step(joint_action)
             step_count += 1
             post_step_outcome = classify_terminal_state(env, self.config.zero_sum)
@@ -548,6 +550,7 @@ class BaseAdversarialAlphaZeroTrainer:
             "outcome_reason": outcome.reason,
             "ego_value": float(outcome.ego_value),
             "npc_value": float(outcome.npc_value),
+            "joint_actions": joint_actions,
             "policy_modes": policy_modes,
             "collected_samples": int(collected_samples),
         }

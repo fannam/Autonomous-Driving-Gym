@@ -29,6 +29,7 @@ setup(
             "alphazero-meta-adversarial-self-play=AlphaZeroMetaAdversarial.scripts.self_play:main",
             "alphazero-meta-adversarial-self-play-save=AlphaZeroMetaAdversarial.scripts.self_play_save:main",
             "alphazero-meta-adversarial-self-play-kaggle-dual-gpu=AlphaZeroMetaAdversarial.scripts.self_play_kaggle_dual_gpu:main",
+            "alphazero-meta-adversarial-replay=AlphaZeroMetaAdversarial.scripts.replay:main",
             "alphazero-meta-adversarial-train=AlphaZeroMetaAdversarial.scripts.train:main",
             "alphazero-meta-adversarial-evaluate=AlphaZeroMetaAdversarial.scripts.evaluate:main",
         ],
