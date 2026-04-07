@@ -520,7 +520,7 @@ class RacetrackEnv(AbstractEnv):
                 if i == 0
                 else self.road.network.random_lane_index(rng)
             )
-            controlled_vehicle = self.action_type.vehicle_class.make_on_lane(
+            controlled_vehicle = self.action_type.vehicle_class_for_agent(i).make_on_lane(
                 self.road, lane_index, speed=None, longitudinal=rng.uniform(20, 50)
             )
 
@@ -1472,7 +1472,7 @@ class RacetrackEnvOval(RacetrackEnv):
                 if i == 0
                 else self.road.network.random_lane_index(rng)
             )
-            controlled_vehicle = self.action_type.vehicle_class.make_on_lane(
+            controlled_vehicle = self.action_type.vehicle_class_for_agent(i).make_on_lane(
                 self.road, lane_index, speed=None, longitudinal=rng.uniform(20.0, 50.0)
             )
 

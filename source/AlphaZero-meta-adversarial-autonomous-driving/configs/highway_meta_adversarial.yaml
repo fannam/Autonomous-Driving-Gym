@@ -27,7 +27,13 @@
           "longitudinal": true,
           "lateral": true,
           "target_speeds": [18, 22, 26, 30, 34, 38]
-        }
+        },
+        "agents_action_config_overrides": [
+          null,
+          {
+            "target_speeds": [22, 26, 30, 34, 38, 42]
+          }
+        ]
       },
       "other_vehicles_type": "highway_env.vehicle.behavior.IDMVehicle",
       "road_speed_limit": 40,

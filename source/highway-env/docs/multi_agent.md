@@ -36,6 +36,9 @@ To that end, update the {ref}`environment configuration <Configuring an environm
 Right now, since the action space has not been changed, only the first vehicle is controlled by `env.step(action)`.
 In order for the environment to accept a tuple of actions, its action type must be set to {py:class}`~highway_env.envs.common.action.MultiAgentAction`
 The type of actions contained in the tuple must be described by a standard {ref}`action configuration <actions>` in the `action_config` field.
+If the controlled vehicles should keep the same action shape but use different dynamics parameters, add
+`agents_action_config_overrides`: a list aligned with the controlled-vehicle indices. Each override is merged onto
+the shared `action_config` and must preserve the action type and space cardinality.
 
 ```{eval-rst}
 .. jupyter-execute::
@@ -45,7 +48,11 @@ The type of actions contained in the tuple must be described by a standard {ref}
       "type": "MultiAgentAction",
       "action_config": {
         "type": "DiscreteMetaAction",
-      }
+      },
+      "agents_action_config_overrides": [
+        None,
+        {"target_speeds": [22, 26, 30, 34, 38, 42]},
+      ],
     }
   })
   env.reset()
@@ -63,6 +70,8 @@ The type of actions contained in the tuple must be described by a standard {ref}
   plt.show()
 
 ```
+
+The second vehicle in that example keeps the same 5-way meta-action space, but can select from a faster speed ladder.
 
 ## Change the observation space
 

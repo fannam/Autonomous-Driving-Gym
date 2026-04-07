@@ -4,6 +4,7 @@ This package is a separate AlphaZero-style implementation for a two-agent advers
 
 - Agent 0: ego vehicle that tries to survive and finish safely on `highway-v0`.
 - Agent 1: adversarial NPC that tries to disrupt ego with the same discrete meta actions.
+  In the default scenario it uses a slightly faster target-speed ladder than ego.
 - Search: simultaneous-move MCTS with decoupled PUCT statistics.
 - Model: one shared-weight late-fusion network used from both viewpoints, with a flat policy over meta actions.
 
@@ -37,6 +38,8 @@ It configures:
 - `controlled_vehicles=2`
 - `MultiAgentAction`
 - `DiscreteMetaAction`
+- ego base target speeds `[18, 22, 26, 30, 34, 38]`
+- NPC per-agent target-speed override `[22, 26, 30, 34, 38, 42]`
 - `MultiAgentObservation`
 - a local occupancy-grid observation used together with mirrored self/opponent history tensors
 - an auxiliary target vector that is fused after the CNN trunk

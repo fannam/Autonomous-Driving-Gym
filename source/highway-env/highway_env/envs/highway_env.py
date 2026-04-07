@@ -82,14 +82,14 @@ class HighwayEnv(AbstractEnv):
         )
 
         self.controlled_vehicles = []
-        for others in other_per_controlled:
+        for agent_index, others in enumerate(other_per_controlled):
             vehicle = Vehicle.create_random(
                 self.road,
                 speed=25.0,
                 lane_id=self.config["initial_lane_id"],
                 spacing=self.config["ego_spacing"],
             )
-            vehicle = self.action_type.vehicle_class(
+            vehicle = self.action_type.vehicle_class_for_agent(agent_index)(
                 self.road, vehicle.position, vehicle.heading, vehicle.speed
             )
             self.controlled_vehicles.append(vehicle)

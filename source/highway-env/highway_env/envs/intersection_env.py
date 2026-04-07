@@ -291,7 +291,7 @@ class IntersectionEnv(AbstractEnv):
             destination = self.config["destination"] or "o" + str(
                 self.np_random.integers(1, 4)
             )
-            ego_vehicle = self.action_type.vehicle_class(
+            ego_vehicle = self.action_type.vehicle_class_for_agent(ego_id)(
                 self.road,
                 ego_lane.position(60.0 + 5.0 * self.np_random.normal(1.0), 0.0),
                 speed=ego_lane.speed_limit,

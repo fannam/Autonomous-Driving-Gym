@@ -104,7 +104,7 @@ class ExitEnv(HighwayEnv):
     def _create_vehicles(self) -> None:
         """Create some new random vehicles of a given type, and add them on the road."""
         self.controlled_vehicles = []
-        for _ in range(self.config["controlled_vehicles"]):
+        for agent_index in range(self.config["controlled_vehicles"]):
             vehicle = Vehicle.create_random(
                 self.road,
                 speed=25.0,
@@ -113,7 +113,7 @@ class ExitEnv(HighwayEnv):
                 lane_id=0,
                 spacing=self.config["ego_spacing"],
             )
-            vehicle = self.action_type.vehicle_class(
+            vehicle = self.action_type.vehicle_class_for_agent(agent_index)(
                 self.road, vehicle.position, vehicle.heading, vehicle.speed
             )
             self.controlled_vehicles.append(vehicle)

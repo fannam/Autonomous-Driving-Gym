@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import numpy as np
+
 from AlphaZeroAdversarial.core.runtime_config import (
     get_scenario_config_path as get_adversarial_config_path,
 )
@@ -91,6 +93,10 @@ def test_build_env_spec_accepts_config_path_for_meta_adversarial() -> None:
     assert spec.config["road_speed_limit"] == 44
     assert spec.config["action"]["action_config"]["type"] == "DiscreteMetaAction"
     assert spec.config["action"]["action_config"]["target_speeds"] == [18, 22, 26, 30, 34, 38]
+    assert spec.config["action"]["agents_action_config_overrides"] == [
+        None,
+        {"target_speeds": [22, 26, 30, 34, 38, 42]},
+    ]
 
 
 def test_meta_env_applies_configurable_road_speed_limit() -> None:
@@ -111,6 +117,38 @@ def test_meta_env_applies_configurable_road_speed_limit() -> None:
         env.close()
 
 
+def test_meta_env_uses_default_asymmetric_target_speeds() -> None:
+    env = init_meta_env(
+        stage="self_play",
+        env_config_overrides={
+            "duration": 1,
+        },
+    )
+    try:
+        ego_vehicle, npc_vehicle = env.unwrapped.controlled_vehicles[:2]
+        action_type = env.unwrapped.action_type
+
+        assert np.allclose(
+            ego_vehicle.target_speeds,
+            np.asarray([18, 22, 26, 30, 34, 38], dtype=np.float32),
+        )
+        assert np.allclose(
+            npc_vehicle.target_speeds,
+            np.asarray([22, 26, 30, 34, 38, 42], dtype=np.float32),
+        )
+        assert np.allclose(
+            action_type.agents_action_types[0].target_speeds,
+            np.asarray([18, 22, 26, 30, 34, 38], dtype=np.float32),
+        )
+        assert np.allclose(
+            action_type.agents_action_types[1].target_speeds,
+            np.asarray([22, 26, 30, 34, 38, 42], dtype=np.float32),
+        )
+    finally:
+        env.close()
+
+
 def test_meta_self_play_config_enables_discounted_values_and_npc_removal() -> None:
     assert abs(float(META_SELF_PLAY_CONFIG.discount_gamma) - 0.99) < 1e-9
     assert META_SELF_PLAY_CONFIG.zero_sum.remove_npc_on_self_fault is True
+    assert int(META_SELF_PLAY_CONFIG.n_actions) == 5

@@ -181,7 +181,7 @@ class ParkingEnv(AbstractEnv, GoalEnv):
         self.controlled_vehicles = []
         for i in range(self.config["controlled_vehicles"]):
             x0 = float(i - self.config["controlled_vehicles"] // 2) * 10.0
-            vehicle = self.action_type.vehicle_class(
+            vehicle = self.action_type.vehicle_class_for_agent(i)(
                 self.road, [x0, 0.0], 2.0 * np.pi * self.np_random.uniform(), 0.0
             )
             vehicle.color = VehicleGraphics.EGO_COLOR

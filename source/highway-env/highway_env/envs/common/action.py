@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import copy
 import functools
 import itertools
-from typing import TYPE_CHECKING, Callable, Union
+from typing import TYPE_CHECKING, Any, Callable, Union
 
 import numpy as np
 from gymnasium import spaces
@@ -57,6 +58,10 @@ class ActionType:
         For discrete action space, return the list of available actions.
         """
         raise NotImplementedError
+
+    def vehicle_class_for_agent(self, agent_index: int) -> Callable:
+        del agent_index
+        return self.vehicle_class
 
     @property
     def controlled_vehicle(self):
@@ -299,12 +304,32 @@ class DiscreteMetaAction(ActionType):
 
 
 class MultiAgentAction(ActionType):
-    def __init__(self, env: AbstractEnv, action_config: dict, **kwargs) -> None:
+    def __init__(
+        self,
+        env: AbstractEnv,
+        action_config: dict,
+        agents_action_config_overrides: list[dict[str, Any] | None] | None = None,
+        **kwargs,
+    ) -> None:
+        del kwargs
         super().__init__(env)
-        self.action_config = action_config
+        self.action_config = copy.deepcopy(action_config)
+        self._controlled_vehicle_count = int(
+            getattr(self.env, "config", {}).get("controlled_vehicles", 1)
+        )
+        if self._controlled_vehicle_count <= 0:
+            raise ValueError("MultiAgentAction expects controlled_vehicles to be positive.")
+        self.agents_action_config_overrides = self._normalize_agent_config_overrides(
+            agents_action_config_overrides
+        )
+        self._agent_action_configs = [
+            self._build_agent_action_config(agent_index)
+            for agent_index in range(self._controlled_vehicle_count)
+        ]
+        self._validate_agent_action_configs()
         self.agents_action_types = []
-        for vehicle in self.env.controlled_vehicles:
-            action_type = action_factory(self.env, self.action_config)
+        for agent_index, vehicle in enumerate(self.env.controlled_vehicles):
+            action_type = self._build_action_type_for_agent(agent_index)
             action_type.controlled_vehicle = vehicle
             self.agents_action_types.append(action_type)
 
@@ -315,7 +340,10 @@ class MultiAgentAction(ActionType):
 
     @property
     def vehicle_class(self) -> Callable:
-        return action_factory(self.env, self.action_config).vehicle_class
+        return self.vehicle_class_for_agent(0)
+
+    def vehicle_class_for_agent(self, agent_index: int) -> Callable:
+        return self._build_action_type_for_agent(agent_index).vehicle_class
 
     def act(self, action: Action) -> None:
         assert isinstance(action, tuple)
@@ -328,6 +356,102 @@ class MultiAgentAction(ActionType):
                 action_type.get_available_actions()
                 for action_type in self.agents_action_types
             ]
+        )
+
+    def _normalize_agent_config_overrides(
+        self,
+        agents_action_config_overrides: list[dict[str, Any] | None] | None,
+    ) -> list[dict[str, Any] | None]:
+        if agents_action_config_overrides is None:
+            return [None] * self._controlled_vehicle_count
+        if len(agents_action_config_overrides) != self._controlled_vehicle_count:
+            raise ValueError(
+                "agents_action_config_overrides must align with controlled_vehicles."
+            )
+
+        normalized_overrides: list[dict[str, Any] | None] = []
+        for override in agents_action_config_overrides:
+            if override is None:
+                normalized_overrides.append(None)
+                continue
+            if not isinstance(override, dict):
+                raise ValueError(
+                    "Each agents_action_config_overrides entry must be a mapping or null."
+                )
+            normalized_overrides.append(copy.deepcopy(override))
+        return normalized_overrides
+
+    def _build_agent_action_config(self, agent_index: int) -> dict[str, Any]:
+        override = self.agents_action_config_overrides[agent_index]
+        if override is None:
+            return copy.deepcopy(self.action_config)
+        return self._merge_action_configs(self.action_config, override)
+
+    def _build_action_type_for_agent(self, agent_index: int) -> ActionType:
+        if not 0 <= int(agent_index) < len(self._agent_action_configs):
+            raise IndexError(f"Invalid controlled-agent index: {agent_index}")
+        return action_factory(self.env, self._agent_action_configs[int(agent_index)])
+
+    def _validate_agent_action_configs(self) -> None:
+        base_action_type = action_factory(self.env, self.action_config)
+        base_action_type_name = str(self.action_config.get("type"))
+        base_space_signature = self._space_signature(base_action_type.space())
+
+        for agent_index, agent_config in enumerate(self._agent_action_configs):
+            action_type_name = str(agent_config.get("type"))
+            if action_type_name != base_action_type_name:
+                raise ValueError(
+                    "agents_action_config_overrides must preserve the base action type. "
+                    f"Expected {base_action_type_name!r}, got {action_type_name!r} "
+                    f"for agent_index={agent_index}."
+                )
+
+            agent_action_type = action_factory(self.env, agent_config)
+            agent_space_signature = self._space_signature(agent_action_type.space())
+            if agent_space_signature != base_space_signature:
+                raise ValueError(
+                    "agents_action_config_overrides must preserve the base action-space "
+                    f"shape/cardinality for agent_index={agent_index}."
+                )
+
+    @staticmethod
+    def _merge_action_configs(
+        base: dict[str, Any],
+        override: dict[str, Any],
+    ) -> dict[str, Any]:
+        merged = copy.deepcopy(base)
+        for key, value in override.items():
+            if key in merged and isinstance(merged[key], dict) and isinstance(value, dict):
+                merged[key] = MultiAgentAction._merge_action_configs(merged[key], value)
+            else:
+                merged[key] = copy.deepcopy(value)
+        return merged
+
+    @staticmethod
+    def _space_signature(space: spaces.Space) -> tuple:
+        if isinstance(space, spaces.Discrete):
+            return ("Discrete", int(space.n))
+        if isinstance(space, spaces.Box):
+            return ("Box", tuple(int(axis) for axis in space.shape))
+        if isinstance(space, spaces.MultiDiscrete):
+            return ("MultiDiscrete", tuple(int(value) for value in space.nvec))
+        if isinstance(space, spaces.MultiBinary):
+            return ("MultiBinary", int(space.n))
+        if isinstance(space, spaces.Tuple):
+            return (
+                "Tuple",
+                tuple(MultiAgentAction._space_signature(item) for item in space.spaces),
+            )
+        if isinstance(space, spaces.Dict):
+            return (
+                "Dict",
+                tuple(
+                    (key, MultiAgentAction._space_signature(value))
+                    for key, value in space.spaces.items()
+                ),
+            )
+        raise TypeError(
+            f"Unsupported action space type for per-agent validation: {type(space).__name__}"
         )
 
 

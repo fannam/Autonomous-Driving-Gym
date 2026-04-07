@@ -1,0 +1,274 @@
+{
+  "created_at_epoch_s": 1775495282.6689837,
+  "config_path": "/kaggle/working/Autonomous-Driving-Gym/source/AlphaZero-meta-adversarial-autonomous-driving/configs/highway_meta_adversarial.yaml",
+  "active_scenario": "highway_meta_adversarial",
+  "env_id": "highway-v0",
+  "scenario_render_mode": "rgb_array",
+  "worker_render_mode": null,
+  "worker_devices": [
+    "cuda:0",
+    "cuda:1",
+    "cuda:0",
+    "cuda:1",
+    "cuda:0",
+    "cuda:1",
+    "cuda:0",
+    "cuda:1"
+  ],
+  "worker_episode_counts": [
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2,
+    2
+  ],
+  "args": {
+    "workers": 8,
+    "episodes_per_worker": 2,
+    "total_episodes": null,
+    "episodes_per_shard": 5,
+    "self_play_seed": 1000,
+    "env_seed": 10,
+    "network_seed": 42,
+    "model_path": "/kaggle/input/datasets/nam080/highway-v0-meta-itr-0/highway-v0-meta-itr-0.pth",
+    "output_dir": "/kaggle/working/meta_self_play_machine_1",
+    "device": "cuda",
+    "num_gpus": 2,
+    "gpu_indices": "0,1",
+    "machine_rank": 1,
+    "global_worker_offset": null,
+    "seed_block_size": 1000000,
+    "torch_threads_per_worker": 1,
+    "max_steps_per_episode": null,
+    "progress_interval": 1,
+    "result_timeout": 0.0,
+    "env_id": null,
+    "duration": null,
+    "vehicles_count": null,
+    "policy_frequency": null,
+    "simulation_frequency": null,
+    "n_simulations": 250,
+    "c_puct": null,
+    "discount_gamma": null,
+    "temperature": null,
+    "temperature_drop_step": null,
+    "dirichlet_alpha": null,
+    "root_exploration_fraction": null,
+    "max_expand_actions_per_agent": null,
+    "no_reuse_tree_between_steps": false
+  },
+  "config": {
+    "tensor": {
+      "grid_shape": [
+        100,
+        24
+      ],
+      "grid_extent": [
+        [
+          -50.0,
+          50.0
+        ],
+        [
+          -12.0,
+          12.0
+        ]
+      ],
+      "grid_step": [
+        1.0,
+        1.0
+      ],
+      "history_length": 5,
+      "static_feature_names": [
+        "presence",
+        "on_lane",
+        "on_road"
+      ],
+      "include_self_speed_plane": true,
+      "include_heading_planes": true,
+      "include_progress_plane": true,
+      "flip_npc_perspective": true,
+      "use_target_vector": true,
+      "target_position_scale": 50.0,
+      "target_velocity_scale": 40.0,
+      "route_lookahead_base": 20.0,
+      "route_lookahead_speed_gain": 0.5,
+      "route_lookahead_min": 10.0,
+      "route_lookahead_max": 60.0,
+      "npc_intercept_speed_floor": 5.0,
+      "npc_intercept_tau_max": 3.0,
+      "include_role_bit": true,
+      "include_target_type_bit": true
+    },
+    "zero_sum": {
+      "minimum_safe_speed": 24.0,
+      "remove_npc_on_self_fault": true
+    },
+    "n_actions": 5,
+    "n_residual_layers": 10,
+    "network_channels": 256,
+    "network_dropout_p": 0.1,
+    "target_hidden_dim": 32,
+    "c_puct": 1.0,
+    "n_simulations": 250,
+    "discount_gamma": 0.99,
+    "temperature": 1.0,
+    "temperature_drop_step": 16,
+    "root_dirichlet_alpha": 0.3,
+    "root_exploration_fraction": 0.25,
+    "relative_pruning_gamma": 0.1,
+    "max_expand_actions_per_agent": 5,
+    "learning_rate": 0.001,
+    "weight_decay": 0.0001,
+    "batch_size": 32,
+    "epochs": 10,
+    "replay_buffer_size": 4000,
+    "warmup_episodes": 0,
+    "warmup_opponent_policy": null,
+    "warmup_collect_opponent_samples": true,
+    "model_path": "models/alphazero_meta_adversarial_highway.pth"
+  },
+  "model_path": "/kaggle/input/datasets/nam080/highway-v0-meta-itr-0/highway-v0-meta-itr-0.pth",
+  "total_samples": 1213,
+  "total_shards": 8,
+  "workers": [
+    {
+      "worker_id": 0,
+      "global_worker_id": 8,
+      "device": "cuda:0",
+      "episodes_per_worker": 2,
+      "total_samples": 160,
+      "shards": [
+        {
+          "worker_id": 0,
+          "global_worker_id": 8,
+          "shard_index": 0,
+          "sample_count": 160,
+          "episode_count": 2,
+          "path": "/kaggle/working/meta_self_play_machine_1/global_worker_00008_local_worker_00_shard_000.pt"
+        }
+      ]
+    },
+    {
+      "worker_id": 1,
+      "global_worker_id": 9,
+      "device": "cuda:1",
+      "episodes_per_worker": 2,
+      "total_samples": 128,
+      "shards": [
+        {
+          "worker_id": 1,
+          "global_worker_id": 9,
+          "shard_index": 0,
+          "sample_count": 128,
+          "episode_count": 2,
+          "path": "/kaggle/working/meta_self_play_machine_1/global_worker_00009_local_worker_01_shard_000.pt"
+        }
+      ]
+    },
+    {
+      "worker_id": 2,
+      "global_worker_id": 10,
+      "device": "cuda:0",
+      "episodes_per_worker": 2,
+      "total_samples": 125,
+      "shards": [
+        {
+          "worker_id": 2,
+          "global_worker_id": 10,
+          "shard_index": 0,
+          "sample_count": 125,
+          "episode_count": 2,
+          "path": "/kaggle/working/meta_self_play_machine_1/global_worker_00010_local_worker_02_shard_000.pt"
+        }
+      ]
+    },
+    {
+      "worker_id": 3,
+      "global_worker_id": 11,
+      "device": "cuda:1",
+      "episodes_per_worker": 2,
+      "total_samples": 160,
+      "shards": [
+        {
+          "worker_id": 3,
+          "global_worker_id": 11,
+          "shard_index": 0,
+          "sample_count": 160,
+          "episode_count": 2,
+          "path": "/kaggle/working/meta_self_play_machine_1/global_worker_00011_local_worker_03_shard_000.pt"
+        }
+      ]
+    },
+    {
+      "worker_id": 4,
+      "global_worker_id": 12,
+      "device": "cuda:0",
+      "episodes_per_worker": 2,
+      "total_samples": 160,
+      "shards": [
+        {
+          "worker_id": 4,
+          "global_worker_id": 12,
+          "shard_index": 0,
+          "sample_count": 160,
+          "episode_count": 2,
+          "path": "/kaggle/working/meta_self_play_machine_1/global_worker_00012_local_worker_04_shard_000.pt"
+        }
+      ]
+    },
+    {
+      "worker_id": 5,
+      "global_worker_id": 13,
+      "device": "cuda:1",
+      "episodes_per_worker": 2,
+      "total_samples": 160,
+      "shards": [
+        {
+          "worker_id": 5,
+          "global_worker_id": 13,
+          "shard_index": 0,
+          "sample_count": 160,
+          "episode_count": 2,
+          "path": "/kaggle/working/meta_self_play_machine_1/global_worker_00013_local_worker_05_shard_000.pt"
+        }
+      ]
+    },
+    {
+      "worker_id": 6,
+      "global_worker_id": 14,
+      "device": "cuda:0",
+      "episodes_per_worker": 2,
+      "total_samples": 160,
+      "shards": [
+        {
+          "worker_id": 6,
+          "global_worker_id": 14,
+          "shard_index": 0,
+          "sample_count": 160,
+          "episode_count": 2,
+          "path": "/kaggle/working/meta_self_play_machine_1/global_worker_00014_local_worker_06_shard_000.pt"
+        }
+      ]
+    },
+    {
+      "worker_id": 7,
+      "global_worker_id": 15,
+      "device": "cuda:1",
+      "episodes_per_worker": 2,
+      "total_samples": 160,
+      "shards": [
+        {
+          "worker_id": 7,
+          "global_worker_id": 15,
+          "shard_index": 0,
+          "sample_count": 160,
+          "episode_count": 2,
+          "path": "/kaggle/working/meta_self_play_machine_1/global_worker_00015_local_worker_07_shard_000.pt"
+        }
+      ]
+    }
+  ]
+}
