@@ -30,6 +30,7 @@ class AdversarialAlphaZeroTrainer(BaseAdversarialAlphaZeroTrainer):
             max_expand_actions_per_agent=self.config.max_expand_actions_per_agent,
             relative_pruning_gamma=self.config.relative_pruning_gamma,
             discount_gamma=self.config.discount_gamma,
+            npc_closing_ucb_bonus=self.config.npc_closing_ucb_bonus,
         )
 
     def _build_policy_target(

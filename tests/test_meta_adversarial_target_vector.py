@@ -9,7 +9,12 @@ import torch
 
 from highway_env.road.road import Road, RoadNetwork
 from highway_env.vehicle.controller import MDPVehicle
+from AlphaZeroMetaAdversarial.core.action_score_heuristics import (
+    ActionScoreHeuristic,
+    NPCClosingActionScoreHeuristic,
+)
 from AlphaZeroMetaAdversarial.core.game import classify_terminal_state
+from AlphaZeroMetaAdversarial.core.mcts import SimultaneousMCTS, SimultaneousMCTSNode
 from AlphaZeroMetaAdversarial.core.perspective_stack import (
     PerspectiveTensorBuilder,
     seed_history_from_env,
@@ -35,6 +40,12 @@ class DummyUnwrappedEnv:
         self.controlled_vehicles = controlled_vehicles
         self.time = 0.0
         self.steps = 0
+        self.action_type = SimpleNamespace(
+            agents_action_types=[
+                DummyMetaActionType(controlled_vehicles[0]),
+                DummyMetaActionType(controlled_vehicles[1]),
+            ]
+        )
 
     def _is_success(self) -> bool:
         return False
@@ -49,6 +60,23 @@ class DummyUnwrappedEnv:
 class DummyEnv:
     def __init__(self, controlled_vehicles) -> None:
         self.unwrapped = DummyUnwrappedEnv(controlled_vehicles)
+
+
+class DummyMetaActionType:
+    actions = {
+        0: "LANE_LEFT",
+        1: "IDLE",
+        2: "LANE_RIGHT",
+        3: "FASTER",
+        4: "SLOWER",
+    }
+    actions_indexes = {label: action for action, label in actions.items()}
+
+    def __init__(self, controlled_vehicle) -> None:
+        self.controlled_vehicle = controlled_vehicle
+
+    def get_available_actions(self) -> list[int]:
+        return list(self.actions.keys())
 
 
 def _make_tensor_config(*, history_length: int = 1) -> PerspectiveTensorConfig:
@@ -101,6 +129,36 @@ def _make_dummy_env() -> DummyEnv:
     return DummyEnv((ego, npc))
 
 
+def _make_mcts_node(env: DummyEnv) -> SimultaneousMCTSNode:
+    return SimultaneousMCTSNode(
+        env=env,
+        parent=None,
+        parent_joint_action=None,
+        tensor_config=_make_tensor_config(),
+        zero_sum_config=ZeroSumConfig(minimum_safe_speed=5.0),
+        history=None,
+        copy_env=False,
+    )
+
+
+def _make_mcts(
+    node: SimultaneousMCTSNode,
+    *,
+    config: PerspectiveTensorConfig,
+    npc_closing_ucb_bonus: float,
+    action_score_heuristic: ActionScoreHeuristic | None = None,
+) -> SimultaneousMCTS:
+    return SimultaneousMCTS(
+        root=node,
+        network=torch.nn.Linear(1, 1),
+        tensor_builder=PerspectiveTensorBuilder(config),
+        device="cpu",
+        n_simulations=1,
+        npc_closing_ucb_bonus=npc_closing_ucb_bonus,
+        action_score_heuristic=action_score_heuristic,
+    )
+
+
 def test_target_vector_batch_has_expected_semantics() -> None:
     config = _make_tensor_config()
     builder = PerspectiveTensorBuilder(config)
@@ -121,6 +179,89 @@ def test_target_vector_batch_has_expected_semantics() -> None:
     assert ego_vector[7] == pytest.approx(1.0)
     assert npc_vector[6] == pytest.approx(-1.0)
     assert npc_vector[7] == pytest.approx(-1.0)
+
+
+def test_npc_ucb_heuristic_prefers_faster_when_ego_is_ahead() -> None:
+    config = _make_tensor_config()
+    env = _make_dummy_env()
+    ego_vehicle, npc_vehicle = env.unwrapped.controlled_vehicles
+    npc_vehicle.position = np.asarray([20.0, 0.0], dtype=np.float32)
+    npc_vehicle.target_lane_index = ("0", "1", 0)
+    npc_vehicle.lane_index = ("0", "1", 0)
+    ego_vehicle.position = np.asarray([60.0, 0.0], dtype=np.float32)
+    ego_vehicle.target_lane_index = ("0", "1", 0)
+    ego_vehicle.lane_index = ("0", "1", 0)
+
+    node = _make_mcts_node(env)
+    heuristic = NPCClosingActionScoreHeuristic(bonus_scale=1.0)
+    _, npc_bonus_by_action = heuristic.action_score_bonuses(
+        node=node,
+        tensor_builder=PerspectiveTensorBuilder(config),
+    )
+
+    _, npc_action = node.select_joint_action(
+        c_puct=0.0,
+        npc_action_bonus_by_action=npc_bonus_by_action,
+    )
+
+    assert npc_action == 3
+
+
+def test_npc_ucb_heuristic_prefers_lane_change_toward_ego() -> None:
+    config = _make_tensor_config()
+    env = _make_dummy_env()
+    ego_vehicle, npc_vehicle = env.unwrapped.controlled_vehicles
+    npc_vehicle.position = np.asarray([20.0, 4.0], dtype=np.float32)
+    npc_vehicle.target_lane_index = ("0", "1", 1)
+    npc_vehicle.lane_index = ("0", "1", 1)
+    ego_vehicle.position = np.asarray([40.0, 0.0], dtype=np.float32)
+    ego_vehicle.target_lane_index = ("0", "1", 0)
+    ego_vehicle.lane_index = ("0", "1", 0)
+
+    node = _make_mcts_node(env)
+    heuristic = NPCClosingActionScoreHeuristic(bonus_scale=1.0)
+    _, npc_bonus_by_action = heuristic.action_score_bonuses(
+        node=node,
+        tensor_builder=PerspectiveTensorBuilder(config),
+    )
+
+    _, npc_action = node.select_joint_action(
+        c_puct=0.0,
+        npc_action_bonus_by_action=npc_bonus_by_action,
+    )
+
+    assert npc_action == 0
+
+
+def test_meta_mcts_accepts_custom_action_score_heuristic() -> None:
+    class PreferSlowerHeuristic(ActionScoreHeuristic):
+        def action_score_bonuses(
+            self,
+            *,
+            node: SimultaneousMCTSNode,
+            tensor_builder: PerspectiveTensorBuilder,
+        ) -> tuple[dict[int, float], dict[int, float]]:
+            del node
+            del tensor_builder
+            return {}, {4: 1.0}
+
+    config = _make_tensor_config()
+    env = _make_dummy_env()
+    node = _make_mcts_node(env)
+    mcts = _make_mcts(
+        node,
+        config=config,
+        npc_closing_ucb_bonus=0.0,
+        action_score_heuristic=PreferSlowerHeuristic(),
+    )
+    _, npc_bonus_by_action = mcts._action_score_bonuses(node)
+
+    _, npc_action = node.select_joint_action(
+        c_puct=0.0,
+        npc_action_bonus_by_action=npc_bonus_by_action,
+    )
+
+    assert npc_action == 4
 
 
 def test_network_accepts_target_vector_late_fusion() -> None:

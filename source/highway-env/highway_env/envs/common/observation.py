@@ -506,6 +506,7 @@ class DetailedOccupancyGridObservation(OccupancyGridObservation):
     Differences vs `OccupancyGridObservation`:
     - Vehicles are rasterized as rectangles using their footprint (LENGTH/WIDTH), not a single cell.
     - Additional dynamic channels are available (speed, heading, distance, TTC risk).
+    - Optional split-presence channels can isolate target-controlled and IDM/background vehicles.
     - Near vehicles overwrite far vehicles on overlap, so local details are preserved.
     - `on_road` can represent full lane area (default) instead of only centerlines.
     - Optional `on_road_soft_mode` encodes area occupancy ratio per cell for smoother road masks.
@@ -1053,6 +1054,14 @@ class DetailedOccupancyGridObservation(OccupancyGridObservation):
             reverse=True,
         )
 
+        controlled_vehicles = tuple(getattr(self.env, "controlled_vehicles", ()))
+        controlled_vehicle_ids = {id(vehicle) for vehicle in controlled_vehicles}
+        target_vehicle_ids = {
+            id(vehicle)
+            for vehicle in controlled_vehicles
+            if vehicle is not self.observer_vehicle
+        }
+
         for vehicle in vehicles:
             rel = vehicle.to_dict(self.observer_vehicle)
             center = self._to_grid_frame(np.array([rel["x"], rel["y"]], dtype=np.float32))
@@ -1076,6 +1085,9 @@ class DetailedOccupancyGridObservation(OccupancyGridObservation):
                 continue
             i_max = i_min + coverage.shape[0]
             j_max = j_min + coverage.shape[1]
+            vehicle_id = id(vehicle)
+            is_target_vehicle = vehicle_id in target_vehicle_ids
+            is_idm_vehicle = vehicle_id not in controlled_vehicle_ids
             values = self._feature_values(
                 vehicle=vehicle,
                 rel=rel,
@@ -1088,6 +1100,12 @@ class DetailedOccupancyGridObservation(OccupancyGridObservation):
                 target = self.grid[layer, i_min:i_max, j_min:j_max]
                 if feature == "presence":
                     np.maximum(target, coverage, out=target)
+                elif feature == "presence_target":
+                    if is_target_vehicle:
+                        np.maximum(target, coverage, out=target)
+                elif feature == "presence_idm":
+                    if is_idm_vehicle:
+                        np.maximum(target, coverage, out=target)
                 else:
                     target[active_mask] = values.get(feature, 0.0)
 

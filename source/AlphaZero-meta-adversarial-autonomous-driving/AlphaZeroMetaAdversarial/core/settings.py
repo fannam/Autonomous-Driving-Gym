@@ -238,6 +238,7 @@ class AdversarialAlphaZeroConfig:
     root_exploration_fraction: float = 0.25
     relative_pruning_gamma: float | None = 0.1
     max_expand_actions_per_agent: int | None = 5
+    npc_closing_ucb_bonus: float = 0.0
     learning_rate: float = 0.001
     weight_decay: float = 1e-4
     batch_size: int = 32
@@ -265,6 +266,11 @@ class AdversarialAlphaZeroConfig:
             or float(self.discount_gamma) > 1.0
         ):
             raise ValueError("discount_gamma must be in the interval (0, 1].")
+        if (
+            not np.isfinite(float(self.npc_closing_ucb_bonus))
+            or float(self.npc_closing_ucb_bonus) < 0.0
+        ):
+            raise ValueError("npc_closing_ucb_bonus must be a non-negative finite float.")
 
     @classmethod
     def from_dict(

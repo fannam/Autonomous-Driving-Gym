@@ -206,14 +206,23 @@ class SimultaneousMCTSNode:
         visits: dict[int, int],
         value_sums: dict[int, float],
         c_puct: float,
+        heuristic_bonus: float = 0.0,
     ) -> float:
         action_visits = int(visits.get(action, 0))
         q_value = 0.0 if action_visits == 0 else float(value_sums.get(action, 0.0)) / action_visits
         prior = float(priors.get(action, 0.0))
         exploration = c_puct * prior * np.sqrt(max(1, self.visit_count)) / (1 + action_visits)
-        return q_value + exploration
+        return q_value + exploration + float(heuristic_bonus)
 
-    def select_joint_action(self, c_puct: float) -> tuple[int, int]:
+    def select_joint_action(
+        self,
+        c_puct: float,
+        *,
+        ego_action_bonus_by_action: dict[int, float] | None = None,
+        npc_action_bonus_by_action: dict[int, float] | None = None,
+    ) -> tuple[int, int]:
+        ego_action_bonus_by_action = ego_action_bonus_by_action or {}
+        npc_action_bonus_by_action = npc_action_bonus_by_action or {}
         ego_scores = {
             action: self._puct_score(
                 action=action,
@@ -221,6 +230,7 @@ class SimultaneousMCTSNode:
                 visits=self.ego_action_visits,
                 value_sums=self.ego_action_value_sums,
                 c_puct=c_puct,
+                heuristic_bonus=float(ego_action_bonus_by_action.get(action, 0.0)),
             )
             for action in self.ego_available_actions
         }
@@ -231,6 +241,7 @@ class SimultaneousMCTSNode:
                 visits=self.npc_action_visits,
                 value_sums=self.npc_action_value_sums,
                 c_puct=c_puct,
+                heuristic_bonus=float(npc_action_bonus_by_action.get(action, 0.0)),
             )
             for action in self.npc_available_actions
         }
@@ -375,11 +386,25 @@ class BaseSimultaneousMCTS:
             "rollouts_per_sec": 0.0 if rollout_time_s <= 0.0 else rollouts / rollout_time_s,
         }
 
+    def _action_score_bonuses(
+        self,
+        node: SimultaneousMCTSNode,
+    ) -> tuple[dict[int, float], dict[int, float]]:
+        del node
+        return {}, {}
+
     def traverse_to_leaf(self) -> tuple[SimultaneousMCTSNode, int]:
         node = self.root
         depth = 0
         while not node.is_leaf():
-            joint_action = node.select_joint_action(self.c_puct)
+            ego_action_bonus_by_action, npc_action_bonus_by_action = self._action_score_bonuses(
+                node
+            )
+            joint_action = node.select_joint_action(
+                self.c_puct,
+                ego_action_bonus_by_action=ego_action_bonus_by_action,
+                npc_action_bonus_by_action=npc_action_bonus_by_action,
+            )
             node = node.children[joint_action]
             depth += 1
         return node, depth

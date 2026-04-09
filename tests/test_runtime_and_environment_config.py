@@ -152,3 +152,4 @@ def test_meta_self_play_config_enables_discounted_values_and_npc_removal() -> No
     assert abs(float(META_SELF_PLAY_CONFIG.discount_gamma) - 0.99) < 1e-9
     assert META_SELF_PLAY_CONFIG.zero_sum.remove_npc_on_self_fault is True
     assert int(META_SELF_PLAY_CONFIG.n_actions) == 5
+    assert float(META_SELF_PLAY_CONFIG.npc_closing_ucb_bonus) == 0.15
