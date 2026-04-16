@@ -43,6 +43,11 @@ def test_rollout_worker_returns_expected_schema() -> None:
     assert len(trajectory.actions) == len(trajectory.rewards)
     assert len(trajectory.actions) == len(trajectory.dones)
     assert np.isfinite(trajectory.behavior_log_probs).all()
+    assert np.isfinite(trajectory.episode_metrics.mean_speed_mps)
+    assert np.isfinite(trajectory.episode_metrics.mean_speed_kph)
+    assert 0.0 <= trajectory.episode_metrics.mean_normalized_speed <= 1.0
+    assert 0.0 <= trajectory.episode_metrics.mean_right_lane_score <= 1.0
+    assert 0.0 <= trajectory.episode_metrics.offroad_rate <= 1.0
 
 
 def test_rollout_worker_is_seed_deterministic() -> None:

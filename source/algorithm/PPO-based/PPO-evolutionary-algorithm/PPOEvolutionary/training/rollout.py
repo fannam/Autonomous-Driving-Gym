@@ -52,6 +52,11 @@ def run_episode(
     behavior_log_probs: list[float] = []
     rewards: list[float] = []
     dones: list[bool] = []
+    speed_sum_mps = 0.0
+    normalized_speed_sum = 0.0
+    right_lane_score_sum = 0.0
+    raw_env_reward_sum = 0.0
+    offroad_steps = 0
 
     terminated = False
     truncated = False
@@ -77,17 +82,31 @@ def run_episode(
         behavior_log_probs.append(float(log_prob))
         rewards.append(float(reward))
         dones.append(bool(terminated or truncated))
+        speed_sum_mps += float(episode_info.get("forward_speed", 0.0))
+        normalized_speed_sum += float(episode_info.get("normalized_speed", 0.0))
+        right_lane_score_sum += float(episode_info.get("right_lane_score", 0.0))
+        raw_env_reward_sum += float(episode_info.get("raw_env_reward", 0.0))
+        offroad_steps += int(bool(episode_info.get("offroad", False)))
 
         obs = next_obs
         step_count += 1
 
     last_obs = np.asarray(obs, dtype=np.float32)
+    step_count_float = float(max(1, step_count))
+    mean_speed_mps = speed_sum_mps / step_count_float
     metrics = EpisodeMetrics(
         fitness=float(episode_info.get("episode_fitness", np.sum(rewards, dtype=np.float32))),
         collided=bool(episode_info.get("collision", episode_info.get("crashed", False))),
         success=bool(episode_info.get("success", False)),
         distance_travelled=float(episode_info.get("distance_travelled", 0.0)),
         episode_length=int(step_count),
+        mean_speed_mps=float(mean_speed_mps),
+        mean_speed_kph=float(mean_speed_mps * 3.6),
+        mean_normalized_speed=float(normalized_speed_sum / step_count_float),
+        mean_right_lane_score=float(right_lane_score_sum / step_count_float),
+        mean_step_reward=float(np.sum(rewards, dtype=np.float32) / step_count_float),
+        mean_raw_env_reward=float(raw_env_reward_sum / step_count_float),
+        offroad_rate=float(offroad_steps / step_count_float),
         terminated=bool(terminated),
         truncated=bool(truncated),
     )

@@ -4,6 +4,7 @@ import json
 import multiprocessing as mp
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
+from time import perf_counter
 from typing import Any
 
 import numpy as np
@@ -37,6 +38,27 @@ def _get_training_device(device: str | None) -> torch.device:
     if device_obj.type == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("Requested CUDA device, but CUDA is not available.")
     return device_obj
+
+
+def _configure_torch_runtime(device: torch.device) -> None:
+    if hasattr(torch, "set_float32_matmul_precision"):
+        torch.set_float32_matmul_precision("high")
+
+    if device.type != "cuda":
+        return
+
+    if torch.backends.cudnn.is_available():
+        torch.backends.cudnn.benchmark = True
+
+    cuda_backend = getattr(torch.backends, "cuda", None)
+    if cuda_backend is not None:
+        matmul_backend = getattr(cuda_backend, "matmul", None)
+        if matmul_backend is not None and hasattr(matmul_backend, "allow_tf32"):
+            matmul_backend.allow_tf32 = True
+
+    cudnn_backend = getattr(torch.backends, "cudnn", None)
+    if cudnn_backend is not None and hasattr(cudnn_backend, "allow_tf32"):
+        cudnn_backend.allow_tf32 = True
 
 
 def _compute_gae(
@@ -84,6 +106,7 @@ class PPOEvolutionaryTrainer:
         self.config = load_stage_config("train", raw_config=self.raw_config)
         self.evaluation_config = load_stage_config("evaluation", raw_config=self.raw_config)
         self.device = _get_training_device(device)
+        _configure_torch_runtime(self.device)
         self.verbose = bool(verbose)
         self.network = build_actor_critic(self.config).to(self.device)
         self.optimizer = torch.optim.Adam(
@@ -279,6 +302,7 @@ class PPOEvolutionaryTrainer:
         generation_index: int,
         workers: int,
         seed_start: int,
+        executor: ProcessPoolExecutor | None = None,
     ) -> list[TrajectoryBatch]:
         episodes_per_policy = int(self.config.rollout.episodes_per_policy)
         max_steps = self.config.rollout.max_steps
@@ -309,11 +333,15 @@ class PPOEvolutionaryTrainer:
                     )
                 )
         else:
-            spawn_context = mp.get_context("spawn")
-            with ProcessPoolExecutor(
-                max_workers=int(workers),
-                mp_context=spawn_context,
-            ) as executor:
+            owns_executor = executor is None
+            if owns_executor:
+                spawn_context = mp.get_context("spawn")
+                executor = ProcessPoolExecutor(
+                    max_workers=int(workers),
+                    mp_context=spawn_context,
+                )
+            try:
+                assert executor is not None
                 future_map = {
                     executor.submit(
                         run_rollout_episode,
@@ -329,6 +357,9 @@ class PPOEvolutionaryTrainer:
                 }
                 for future in as_completed(future_map):
                     trajectories.append(future.result())
+            finally:
+                if owns_executor and executor is not None:
+                    executor.shutdown(wait=True, cancel_futures=True)
 
         trajectories.sort(key=lambda trajectory: (trajectory.policy_index, trajectory.seed))
         return trajectories
@@ -383,78 +414,136 @@ class PPOEvolutionaryTrainer:
             seed=int(seed_start),
         )
 
-        for generation_index in range(int(generations)):
-            if self.verbose:
-                print(
-                    f"[ppo-evolutionary] generation={generation_index + 1} "
-                    f"population={population_size} workers={worker_count}",
-                    flush=True,
-                )
-
-            trajectories = self._collect_generation_rollouts(
-                population,
-                generation_index=generation_index,
-                workers=worker_count,
-                seed_start=int(seed_start),
+        rollout_executor: ProcessPoolExecutor | None = None
+        if worker_count > 1:
+            spawn_context = mp.get_context("spawn")
+            rollout_executor = ProcessPoolExecutor(
+                max_workers=worker_count,
+                mp_context=spawn_context,
             )
-            aggregates = aggregate_policy_metrics(trajectories, population_size)
-            ranked_aggregates = rank_policy_aggregates(aggregates)
-            best_policy_index = int(ranked_aggregates[0].policy_index)
-            best_policy_state = clone_state_dict(population[best_policy_index])
 
-            if (
-                ranked_aggregates[0].fitness > self.best_fitness
-                or (
-                    np.isclose(ranked_aggregates[0].fitness, self.best_fitness)
-                    and ranked_aggregates[0].distance_travelled > self.best_distance
+        try:
+            for generation_index in range(int(generations)):
+                generation_number = generation_index + 1
+                if self.verbose:
+                    print(
+                        f"[ppo-evolutionary] generation={generation_number} "
+                        f"population={population_size} workers={worker_count}",
+                        flush=True,
+                    )
+
+                generation_started_at = perf_counter()
+                rollout_started_at = perf_counter()
+                trajectories = self._collect_generation_rollouts(
+                    population,
+                    generation_index=generation_index,
+                    workers=worker_count,
+                    seed_start=int(seed_start),
+                    executor=rollout_executor,
                 )
-            ):
-                self.best_fitness = float(ranked_aggregates[0].fitness)
-                self.best_distance = float(ranked_aggregates[0].distance_travelled)
-                self.best_policy_state_dict = best_policy_state
+                rollout_duration_s = perf_counter() - rollout_started_at
 
-            ppo_metrics = self._ppo_update(trajectories)
-            episode_metrics = [trajectory.episode_metrics for trajectory in trajectories]
-            summary = GenerationSummary(
-                generation=generation_index + 1,
-                best_fitness=float(ranked_aggregates[0].fitness),
-                mean_fitness=float(np.mean([aggregate.fitness for aggregate in aggregates])),
-                collision_rate=float(np.mean([float(metric.collided) for metric in episode_metrics])),
-                success_rate=float(np.mean([float(metric.success) for metric in episode_metrics])),
-                mean_distance=float(np.mean([metric.distance_travelled for metric in episode_metrics])),
-                mean_episode_length=float(
-                    np.mean([float(metric.episode_length) for metric in episode_metrics])
-                ),
-                policy_loss=float(ppo_metrics["policy_loss"]),
-                value_loss=float(ppo_metrics["value_loss"]),
-                entropy=float(ppo_metrics["entropy"]),
-                approx_kl=float(ppo_metrics["approx_kl"]),
-            )
-            self.metrics_history.append(summary.to_dict())
-            self._append_metrics_log(summary)
-            self.current_generation = generation_index + 1
+                aggregates = aggregate_policy_metrics(trajectories, population_size)
+                ranked_aggregates = rank_policy_aggregates(aggregates)
+                best_policy_index = int(ranked_aggregates[0].policy_index)
+                best_policy_state = clone_state_dict(population[best_policy_index])
 
-            checkpoint_path = self.save_checkpoint(save_path)
-            if self.verbose:
-                print(
-                    "[ppo-evolutionary] "
-                    f"best_fitness={summary.best_fitness:.4f} "
-                    f"mean_fitness={summary.mean_fitness:.4f} "
-                    f"policy_loss={summary.policy_loss:.4f} "
-                    f"value_loss={summary.value_loss:.4f} "
-                    f"checkpoint={checkpoint_path}",
-                    flush=True,
+                if (
+                    ranked_aggregates[0].fitness > self.best_fitness
+                    or (
+                        np.isclose(ranked_aggregates[0].fitness, self.best_fitness)
+                        and ranked_aggregates[0].distance_travelled > self.best_distance
+                    )
+                ):
+                    self.best_fitness = float(ranked_aggregates[0].fitness)
+                    self.best_distance = float(ranked_aggregates[0].distance_travelled)
+                    self.best_policy_state_dict = best_policy_state
+
+                ppo_started_at = perf_counter()
+                ppo_metrics = self._ppo_update(trajectories)
+                ppo_duration_s = perf_counter() - ppo_started_at
+
+                episode_metrics = [trajectory.episode_metrics for trajectory in trajectories]
+                summary = GenerationSummary(
+                    generation=generation_number,
+                    best_fitness=float(ranked_aggregates[0].fitness),
+                    mean_fitness=float(np.mean([aggregate.fitness for aggregate in aggregates])),
+                    fitness_std=float(np.std([metric.fitness for metric in episode_metrics])),
+                    collision_rate=float(np.mean([float(metric.collided) for metric in episode_metrics])),
+                    success_rate=float(np.mean([float(metric.success) for metric in episode_metrics])),
+                    mean_distance=float(np.mean([metric.distance_travelled for metric in episode_metrics])),
+                    mean_episode_length=float(
+                        np.mean([float(metric.episode_length) for metric in episode_metrics])
+                    ),
+                    mean_speed_mps=float(
+                        np.mean([metric.mean_speed_mps for metric in episode_metrics])
+                    ),
+                    mean_speed_kph=float(
+                        np.mean([metric.mean_speed_kph for metric in episode_metrics])
+                    ),
+                    mean_normalized_speed=float(
+                        np.mean([metric.mean_normalized_speed for metric in episode_metrics])
+                    ),
+                    mean_right_lane_score=float(
+                        np.mean([metric.mean_right_lane_score for metric in episode_metrics])
+                    ),
+                    mean_step_reward=float(
+                        np.mean([metric.mean_step_reward for metric in episode_metrics])
+                    ),
+                    mean_raw_env_reward=float(
+                        np.mean([metric.mean_raw_env_reward for metric in episode_metrics])
+                    ),
+                    offroad_rate=float(np.mean([metric.offroad_rate for metric in episode_metrics])),
+                    policy_loss=float(ppo_metrics["policy_loss"]),
+                    value_loss=float(ppo_metrics["value_loss"]),
+                    entropy=float(ppo_metrics["entropy"]),
+                    approx_kl=float(ppo_metrics["approx_kl"]),
                 )
+                self.metrics_history.append(summary.to_dict())
+                self._append_metrics_log(summary)
+                self.current_generation = generation_number
 
-            evolution_step = evolve_population(
-                population,
-                ranked_aggregates,
-                elite_fraction=float(self.config.evolution.elite_fraction),
-                mutation_std=float(self.config.evolution.mutation_std),
-                ppo_state_dict=clone_state_dict(self.network.state_dict()),
-                seed=int(seed_start) + 1000 + generation_index * max(1, population_size),
-            )
-            population = evolution_step.population
+                checkpoint_path = self.save_checkpoint(save_path)
+                generation_duration_s = perf_counter() - generation_started_at
+                sample_count = int(sum(len(trajectory.actions) for trajectory in trajectories))
+                if self.verbose:
+                    print(
+                        "[ppo-evolutionary] "
+                        f"best_fitness={summary.best_fitness:.4f} "
+                        f"mean_fitness={summary.mean_fitness:.4f} "
+                        f"fitness_std={summary.fitness_std:.4f} "
+                        f"collision_rate={summary.collision_rate:.3f} "
+                        f"success_rate={summary.success_rate:.3f} "
+                        f"mean_distance={summary.mean_distance:.2f} "
+                        f"mean_len={summary.mean_episode_length:.2f} "
+                        f"mean_speed={summary.mean_speed_kph:.2f}kmh "
+                        f"mean_norm_speed={summary.mean_normalized_speed:.3f} "
+                        f"lane_score={summary.mean_right_lane_score:.3f} "
+                        f"step_reward={summary.mean_step_reward:.4f} "
+                        f"raw_reward={summary.mean_raw_env_reward:.4f} "
+                        f"offroad_rate={summary.offroad_rate:.3f} "
+                        f"policy_loss={summary.policy_loss:.4f} "
+                        f"value_loss={summary.value_loss:.4f} "
+                        f"samples={sample_count} "
+                        f"rollout_s={rollout_duration_s:.2f} "
+                        f"ppo_s={ppo_duration_s:.2f} "
+                        f"total_s={generation_duration_s:.2f} "
+                        f"checkpoint={checkpoint_path}",
+                        flush=True,
+                    )
+
+                evolution_step = evolve_population(
+                    population,
+                    ranked_aggregates,
+                    elite_fraction=float(self.config.evolution.elite_fraction),
+                    mutation_std=float(self.config.evolution.mutation_std),
+                    ppo_state_dict=clone_state_dict(self.network.state_dict()),
+                    seed=int(seed_start) + 1000 + generation_index * max(1, population_size),
+                )
+                population = evolution_step.population
+        finally:
+            if rollout_executor is not None:
+                rollout_executor.shutdown(wait=True, cancel_futures=True)
 
         return list(self.metrics_history)
 

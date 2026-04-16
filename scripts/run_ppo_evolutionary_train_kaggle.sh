@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-LOCAL_REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 EXPECTED_TRAIN_RELATIVE="source/algorithm/PPO-based/PPO-evolutionary-algorithm/PPOEvolutionary/scripts/train.py"
 REPO_URL="${REPO_URL:-https://github.com/fannam/Autonomous-Driving-Gym.git}"
 AUTO_CLONE_REPO="${AUTO_CLONE_REPO:-1}"
@@ -17,6 +15,29 @@ has_repo_layout() {
   local root="$1"
   [[ -f "$root/$EXPECTED_TRAIN_RELATIVE" ]]
 }
+
+resolve_invocation_dir() {
+  local script_ref="${BASH_SOURCE[0]-}"
+  if [[ -n "$script_ref" && "$script_ref" != "bash" ]]; then
+    cd "$(dirname "$script_ref")" && pwd
+    return
+  fi
+
+  local argv0="${0-}"
+  if [[ -n "$argv0" && "$argv0" != "bash" && "$argv0" != "-bash" ]]; then
+    cd "$(dirname "$argv0")" && pwd
+    return
+  fi
+
+  pwd
+}
+
+INVOCATION_DIR="$(resolve_invocation_dir)"
+if has_repo_layout "$INVOCATION_DIR"; then
+  LOCAL_REPO_ROOT="$INVOCATION_DIR"
+else
+  LOCAL_REPO_ROOT="$(cd "$INVOCATION_DIR/.." 2>/dev/null && pwd || printf '%s\n' "$INVOCATION_DIR")"
+fi
 
 ensure_git_checkout() {
   local target_root="$1"
@@ -82,6 +103,7 @@ export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
 export MKL_NUM_THREADS="${MKL_NUM_THREADS:-1}"
 export OPENBLAS_NUM_THREADS="${OPENBLAS_NUM_THREADS:-1}"
 export NUMEXPR_NUM_THREADS="${NUMEXPR_NUM_THREADS:-1}"
+export PYTHONUNBUFFERED="${PYTHONUNBUFFERED:-1}"
 
 if [[ -n "${PYTHON_BIN:-}" ]]; then
   PYTHON_BIN="$PYTHON_BIN"
@@ -90,7 +112,8 @@ elif command -v python3 >/dev/null 2>&1; then
 else
   PYTHON_BIN="python"
 fi
-INSTALL_DEPS="${INSTALL_DEPS:-1}"
+INSTALL_DEPS="${INSTALL_DEPS:-auto}"
+INSTALL_LOCAL_EDITABLE="${INSTALL_LOCAL_EDITABLE:-0}"
 UPGRADE_PIP="${UPGRADE_PIP:-0}"
 DRY_RUN="${DRY_RUN:-0}"
 RUN_EVALUATION_AFTER_TRAIN="${RUN_EVALUATION_AFTER_TRAIN:-0}"
@@ -111,8 +134,10 @@ EVAL_METRICS_PATH="${EVAL_METRICS_PATH:-$OUTPUT_DIR/ppo_evolutionary_eval_metric
 
 GENERATIONS="${GENERATIONS:-20}"
 POPULATION_SIZE="${POPULATION_SIZE:-8}"
-WORKERS="${WORKERS:-8}"
-DEVICE="${DEVICE:-cuda:0}"
+WORKERS="${WORKERS:-auto}"
+WORKER_CAP="${WORKER_CAP:-8}"
+CPU_RESERVE="${CPU_RESERVE:-1}"
+DEVICE="${DEVICE:-auto}"
 SEED_START="${SEED_START:-21}"
 POLICY_SOURCE="${POLICY_SOURCE:-best}"
 EVAL_EPISODES="${EVAL_EPISODES:-3}"
@@ -128,6 +153,16 @@ LANES_COUNT="${LANES_COUNT:-}"
 ROAD_SPEED_LIMIT="${ROAD_SPEED_LIMIT:-}"
 POLICY_FREQUENCY="${POLICY_FREQUENCY:-}"
 SIMULATION_FREQUENCY="${SIMULATION_FREQUENCY:-}"
+LEARNING_RATE="${LEARNING_RATE:-}"
+PPO_EPOCHS="${PPO_EPOCHS:-}"
+MINIBATCH_SIZE="${MINIBATCH_SIZE:-}"
+TARGET_KL="${TARGET_KL:-}"
+ENTROPY_COEF="${ENTROPY_COEF:-}"
+VALUE_COEF="${VALUE_COEF:-}"
+CLIP_EPSILON="${CLIP_EPSILON:-}"
+ELITE_FRACTION="${ELITE_FRACTION:-}"
+MUTATION_STD="${MUTATION_STD:-}"
+INITIAL_POPULATION_NOISE_STD="${INITIAL_POPULATION_NOISE_STD:-}"
 
 export PPO_EVOLUTIONARY_SCENARIO="${PPO_EVOLUTIONARY_SCENARIO:-highway_ppo_evolutionary}"
 export PYTHONPATH="$REPO_ROOT/source:$REPO_ROOT/source/highway-env:$PPO_ROOT${PYTHONPATH:+:$PYTHONPATH}"
@@ -151,7 +186,60 @@ install_local_editable() {
   "$PYTHON_BIN" -m pip install -q --no-deps -e "$package_path"
 }
 
-if [[ "$INSTALL_DEPS" == "1" ]]; then
+is_truthy() {
+  local raw="${1:-}"
+  case "${raw,,}" in
+    1|true|yes|on) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+resolve_cpu_count() {
+  if command -v nproc >/dev/null 2>&1; then
+    nproc
+    return
+  fi
+
+  "$PYTHON_BIN" - <<'PY'
+import os
+print(max(1, int(os.cpu_count() or 1)))
+PY
+}
+
+resolve_effective_workers() {
+  if [[ "${WORKERS,,}" != "auto" ]]; then
+    printf '%s\n' "$WORKERS"
+    return
+  fi
+
+  local cpu_count
+  cpu_count="$(resolve_cpu_count)"
+  local reserve="$CPU_RESERVE"
+  local worker_cap="$WORKER_CAP"
+  local tasks_hint="$POPULATION_SIZE"
+  local episodes_hint="${EPISODES_PER_POLICY:-1}"
+
+  if [[ -n "$episodes_hint" && "$episodes_hint" =~ ^[0-9]+$ ]]; then
+    tasks_hint=$(( POPULATION_SIZE * episodes_hint ))
+  fi
+
+  local effective=$(( cpu_count - reserve ))
+  if (( effective < 1 )); then
+    effective=1
+  fi
+  if (( worker_cap > 0 && effective > worker_cap )); then
+    effective="$worker_cap"
+  fi
+  if (( tasks_hint > 0 && effective > tasks_hint )); then
+    effective="$tasks_hint"
+  fi
+  printf '%s\n' "$effective"
+}
+
+CPU_COUNT="$(resolve_cpu_count)"
+EFFECTIVE_WORKERS="$(resolve_effective_workers)"
+
+if [[ "${INSTALL_DEPS,,}" == "auto" || "${INSTALL_DEPS,,}" == "1" ]] || is_truthy "$INSTALL_DEPS"; then
   if [[ "$UPGRADE_PIP" == "1" ]]; then
     echo "[install] upgrading pip/setuptools/wheel" >&2
     "$PYTHON_BIN" -m pip install -q --upgrade pip setuptools wheel
@@ -161,7 +249,9 @@ if [[ "$INSTALL_DEPS" == "1" ]]; then
   ensure_python_module yaml "PyYAML"
   ensure_python_module numpy "numpy"
   ensure_python_module torch "torch"
+fi
 
+if is_truthy "$INSTALL_LOCAL_EDITABLE"; then
   install_local_editable "$REPO_ROOT/source/highway-env"
   install_local_editable "$PPO_ROOT"
 fi
@@ -173,7 +263,7 @@ GENERATED_CONFIG_PATH="$GENERATED_CONFIG_PATH" \
 CHECKPOINT_PATH="$CHECKPOINT_PATH" \
 METRICS_PATH="$METRICS_PATH" \
 EVAL_METRICS_PATH="$EVAL_METRICS_PATH" \
-WORKERS="$WORKERS" \
+WORKERS="$EFFECTIVE_WORKERS" \
 EPISODES_PER_POLICY="$EPISODES_PER_POLICY" \
 MAX_STEPS="$MAX_STEPS" \
 DURATION="$DURATION" \
@@ -183,6 +273,16 @@ LANES_COUNT="$LANES_COUNT" \
 ROAD_SPEED_LIMIT="$ROAD_SPEED_LIMIT" \
 POLICY_FREQUENCY="$POLICY_FREQUENCY" \
 SIMULATION_FREQUENCY="$SIMULATION_FREQUENCY" \
+LEARNING_RATE="$LEARNING_RATE" \
+PPO_EPOCHS="$PPO_EPOCHS" \
+MINIBATCH_SIZE="$MINIBATCH_SIZE" \
+TARGET_KL="$TARGET_KL" \
+ENTROPY_COEF="$ENTROPY_COEF" \
+VALUE_COEF="$VALUE_COEF" \
+CLIP_EPSILON="$CLIP_EPSILON" \
+ELITE_FRACTION="$ELITE_FRACTION" \
+MUTATION_STD="$MUTATION_STD" \
+INITIAL_POPULATION_NOISE_STD="$INITIAL_POPULATION_NOISE_STD" \
 "$PYTHON_BIN" - <<'PY'
 import json
 import os
@@ -217,6 +317,8 @@ config = json.loads(Path(os.environ["BASE_CONFIG_PATH"]).read_text(encoding="utf
 train_preset = config["presets"]["train"]
 evaluation_preset = config["presets"]["evaluation"]
 environment_config = config["environment"]["config"]
+ppo_config = train_preset["ppo"]
+evolution_config = train_preset["evolution"]
 
 train_preset["logging"]["metrics_path"] = os.environ["METRICS_PATH"]
 train_preset["model_path"] = os.environ["CHECKPOINT_PATH"]
@@ -257,6 +359,28 @@ maybe_set(
     "simulation_frequency",
     parse_optional_int(os.environ["SIMULATION_FREQUENCY"]),
 )
+maybe_set(ppo_config, "learning_rate", parse_optional_float(os.environ["LEARNING_RATE"]))
+maybe_set(ppo_config, "ppo_epochs", parse_optional_int(os.environ["PPO_EPOCHS"]))
+maybe_set(ppo_config, "minibatch_size", parse_optional_int(os.environ["MINIBATCH_SIZE"]))
+maybe_set(ppo_config, "target_kl", parse_optional_float(os.environ["TARGET_KL"]))
+maybe_set(ppo_config, "entropy_coef", parse_optional_float(os.environ["ENTROPY_COEF"]))
+maybe_set(ppo_config, "value_coef", parse_optional_float(os.environ["VALUE_COEF"]))
+maybe_set(ppo_config, "clip_epsilon", parse_optional_float(os.environ["CLIP_EPSILON"]))
+maybe_set(
+    evolution_config,
+    "elite_fraction",
+    parse_optional_float(os.environ["ELITE_FRACTION"]),
+)
+maybe_set(
+    evolution_config,
+    "mutation_std",
+    parse_optional_float(os.environ["MUTATION_STD"]),
+)
+maybe_set(
+    evolution_config,
+    "initial_population_noise_std",
+    parse_optional_float(os.environ["INITIAL_POPULATION_NOISE_STD"]),
+)
 
 generated_config_path = Path(os.environ["GENERATED_CONFIG_PATH"])
 generated_config_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
@@ -270,7 +394,7 @@ cmd=(
   --config-path "$GENERATED_CONFIG_PATH"
   --generations "$GENERATIONS"
   --population-size "$POPULATION_SIZE"
-  --workers "$WORKERS"
+  --workers "$EFFECTIVE_WORKERS"
   --device "$DEVICE"
   --seed-start "$SEED_START"
   --save-path "$CHECKPOINT_PATH"
@@ -294,7 +418,7 @@ printf '[run-ppo-evolutionary-train-kaggle] scenario=%s base_config=%s generated
   "$OUTPUT_DIR" \
   "$GENERATIONS" \
   "$POPULATION_SIZE" \
-  "$WORKERS" \
+  "$EFFECTIVE_WORKERS" \
   "$DEVICE" \
   "$CHECKPOINT_PATH" \
   "$METRICS_PATH" \
@@ -305,6 +429,15 @@ printf '[repo] root=%s auto_clone=%s force_clone=%s clone_ref=%s\n' \
   "$AUTO_CLONE_REPO" \
   "$FORCE_CLONE" \
   "${CLONE_REF:-default}"
+
+printf '[runtime] cpu_count=%s requested_workers=%s effective_workers=%s worker_cap=%s cpu_reserve=%s install_deps=%s install_local_editable=%s\n' \
+  "$CPU_COUNT" \
+  "$WORKERS" \
+  "$EFFECTIVE_WORKERS" \
+  "$WORKER_CAP" \
+  "$CPU_RESERVE" \
+  "$INSTALL_DEPS" \
+  "$INSTALL_LOCAL_EDITABLE"
 
 if [[ -n "$EPISODES_PER_POLICY" ]]; then
   printf 'episodes_per_policy=%s\n' "$EPISODES_PER_POLICY"

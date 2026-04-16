@@ -50,11 +50,14 @@ class EvolutionaryRewardWrapper(gym.Wrapper):
         return max(0.0, float(Vehicle.MIN_SPEED)), max(0.0, float(Vehicle.MAX_SPEED))
 
     def _normalized_speed(self) -> float:
-        vehicle = self.unwrapped.vehicle
         min_speed, max_speed = self._get_speed_bounds()
         span = max(1e-6, max_speed - min_speed)
-        forward_speed = float(vehicle.speed) * float(np.cos(float(vehicle.heading)))
+        forward_speed = self._forward_speed()
         return float(np.clip((forward_speed - min_speed) / span, 0.0, 1.0))
+
+    def _forward_speed(self) -> float:
+        vehicle = self.unwrapped.vehicle
+        return float(vehicle.speed) * float(np.cos(float(vehicle.heading)))
 
     def _right_lane_score(self) -> float:
         vehicle = self.unwrapped.vehicle
@@ -104,6 +107,7 @@ class EvolutionaryRewardWrapper(gym.Wrapper):
         augmented_info.update(
             {
                 "reward_terms": reward_terms,
+                "forward_speed": float(self._forward_speed()),
                 "normalized_speed": float(terms["normalized_speed"]),
                 "right_lane_score": float(terms["right_lane_score"]),
                 "collision": bool(terms["collision"]),

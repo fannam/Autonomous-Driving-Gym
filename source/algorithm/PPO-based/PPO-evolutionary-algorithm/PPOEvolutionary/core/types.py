@@ -12,6 +12,13 @@ class EpisodeMetrics:
     success: bool
     distance_travelled: float
     episode_length: int
+    mean_speed_mps: float
+    mean_speed_kph: float
+    mean_normalized_speed: float
+    mean_right_lane_score: float
+    mean_step_reward: float
+    mean_raw_env_reward: float
+    offroad_rate: float
     terminated: bool
     truncated: bool
 
@@ -42,10 +49,18 @@ class GenerationSummary:
     generation: int
     best_fitness: float
     mean_fitness: float
+    fitness_std: float
     collision_rate: float
     success_rate: float
     mean_distance: float
     mean_episode_length: float
+    mean_speed_mps: float
+    mean_speed_kph: float
+    mean_normalized_speed: float
+    mean_right_lane_score: float
+    mean_step_reward: float
+    mean_raw_env_reward: float
+    offroad_rate: float
     policy_loss: float
     value_loss: float
     entropy: float

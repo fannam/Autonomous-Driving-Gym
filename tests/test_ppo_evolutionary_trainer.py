@@ -69,6 +69,10 @@ def test_trainer_smoke_fit_writes_checkpoint_and_metrics(trained_smoke_run) -> N
     assert len(summaries) == 1
     assert "best_fitness" in summaries[0]
     assert "policy_loss" in summaries[0]
+    assert "mean_speed_kph" in summaries[0]
+    assert "mean_episode_length" in summaries[0]
+    assert "mean_step_reward" in summaries[0]
+    assert "collision_rate" in summaries[0]
 
 
 def test_evaluation_smoke_loads_checkpoint_and_reports_metrics(trained_smoke_run) -> None:
