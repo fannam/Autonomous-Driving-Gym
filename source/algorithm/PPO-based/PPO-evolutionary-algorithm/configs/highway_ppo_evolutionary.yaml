@@ -1,0 +1,139 @@
+{
+  "scenario_name": "highway_ppo_evolutionary",
+  "environment": {
+    "env_id": "highway-v0",
+    "render_mode": "rgb_array",
+    "config": {
+      "observation": {
+        "type": "DetailedOccupancyGrid",
+        "features": ["presence", "speed", "on_lane", "on_road"],
+        "grid_size": [[-50, 50], [-12, 12]],
+        "grid_step": [1.0, 1.0],
+        "absolute": false,
+        "align_to_vehicle_axes": true,
+        "include_ego_vehicle": true,
+        "on_road_mode": "area",
+        "on_road_soft_mode": true,
+        "presence_subsamples": 5,
+        "on_road_subsamples": 3
+      },
+      "action": {
+        "type": "DiscreteMetaAction",
+        "longitudinal": true,
+        "lateral": true,
+        "target_speeds": [18, 22, 26, 30, 34, 38]
+      },
+      "collision_reward": 0,
+      "right_lane_reward": 0,
+      "left_lane_constraint": 0,
+      "left_lane_reward": 0,
+      "high_speed_reward": 0,
+      "lane_change_reward": 0,
+      "normalize_reward": false,
+      "reward_speed_range": [18, 38],
+      "vehicles_density": 1.5,
+      "vehicles_count": 40,
+      "lanes_count": 4,
+      "road_speed_limit": 40,
+      "policy_frequency": 1,
+      "duration": 40,
+      "success_mode": "distance",
+      "success_max_steps": null,
+      "success_min_distance": null,
+      "success_speed_range_fraction": 0.75,
+      "success_speed_max_fraction": 0.8,
+      "offroad_terminal": true,
+      "terminate_on_success": false
+    }
+  },
+  "presets": {
+    "train": {
+      "env_overrides": {
+        "terminate_on_success": false
+      },
+      "reward": {
+        "speed_weight": 1.0,
+        "right_lane_weight": 0.1,
+        "collision_penalty": 5.0,
+        "offroad_penalty": 5.0
+      },
+      "network": {
+        "stem_channels": 32,
+        "downsample_channels": 64,
+        "latent_dim": 256,
+        "residual_blocks": 4,
+        "dropout_p": 0.1
+      },
+      "rollout": {
+        "episodes_per_policy": 1,
+        "workers": 2,
+        "max_steps": null
+      },
+      "ppo": {
+        "learning_rate": 0.0003,
+        "gamma": 0.99,
+        "gae_lambda": 0.95,
+        "clip_epsilon": 0.2,
+        "ppo_epochs": 2,
+        "minibatch_size": 128,
+        "entropy_coef": 0.01,
+        "value_coef": 0.5,
+        "max_grad_norm": 0.5,
+        "target_kl": 0.02
+      },
+      "evolution": {
+        "elite_fraction": 0.25,
+        "mutation_std": 0.02,
+        "initial_population_noise_std": 0.02
+      },
+      "logging": {
+        "metrics_path": "outputs/ppo_evolutionary_metrics.jsonl"
+      },
+      "model_path": "models/ppo_evolutionary_highway.pt"
+    },
+    "evaluation": {
+      "env_overrides": {
+        "terminate_on_success": true
+      },
+      "reward": {
+        "speed_weight": 1.0,
+        "right_lane_weight": 0.1,
+        "collision_penalty": 5.0,
+        "offroad_penalty": 5.0
+      },
+      "network": {
+        "stem_channels": 32,
+        "downsample_channels": 64,
+        "latent_dim": 256,
+        "residual_blocks": 4,
+        "dropout_p": 0.0
+      },
+      "rollout": {
+        "episodes_per_policy": 1,
+        "workers": 1,
+        "max_steps": null
+      },
+      "ppo": {
+        "learning_rate": 0.0003,
+        "gamma": 0.99,
+        "gae_lambda": 0.95,
+        "clip_epsilon": 0.2,
+        "ppo_epochs": 2,
+        "minibatch_size": 128,
+        "entropy_coef": 0.01,
+        "value_coef": 0.5,
+        "max_grad_norm": 0.5,
+        "target_kl": 0.02
+      },
+      "evolution": {
+        "elite_fraction": 0.25,
+        "mutation_std": 0.02,
+        "initial_population_noise_std": 0.02
+      },
+      "logging": {
+        "metrics_path": "outputs/ppo_evolutionary_eval_metrics.jsonl"
+      },
+      "model_path": "models/ppo_evolutionary_highway.pt"
+    }
+  }
+}
