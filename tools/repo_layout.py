@@ -15,6 +15,9 @@ ALPHAZERO_META_ADVERSARIAL_ROOT = SOURCE_ROOT / "AlphaZero-meta-adversarial-auto
 PPO_EVOLUTIONARY_ROOT = (
     SOURCE_ROOT / "algorithm" / "PPO-based" / "PPO-evolutionary-algorithm"
 )
+PPO_TRADITIONAL_ROOT = (
+    SOURCE_ROOT / "algorithm" / "PPO-based" / "PPO-traditional"
+)
 
 SCRIPTS_ROOT = REPO_ROOT / "scripts"
 TOOLS_ROOT = REPO_ROOT / "tools"
@@ -29,6 +32,7 @@ PROJECT_ROOTS = {
     "alphazero_adversarial": ALPHAZERO_ADVERSARIAL_ROOT,
     "alphazero_meta_adversarial": ALPHAZERO_META_ADVERSARIAL_ROOT,
     "ppo_evolutionary": PPO_EVOLUTIONARY_ROOT,
+    "ppo_traditional": PPO_TRADITIONAL_ROOT,
     "autonomous_driving_shared": AUTONOMOUS_DRIVING_SHARED_ROOT,
     "highway_env": HIGHWAY_ENV_ROOT,
 }

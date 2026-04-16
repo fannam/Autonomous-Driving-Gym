@@ -14,6 +14,7 @@ from tools.repo_layout import (  # noqa: E402
     ALPHAZERO_META_ADVERSARIAL_ROOT,
     HIGHWAY_ENV_ROOT,
     PPO_EVOLUTIONARY_ROOT,
+    PPO_TRADITIONAL_ROOT,
     SOURCE_ROOT,
     prepend_sys_path,
 )
@@ -26,4 +27,5 @@ prepend_sys_path(
     ALPHAZERO_BASED_ROOT,
     ALPHAZERO_META_ADVERSARIAL_ROOT,
     PPO_EVOLUTIONARY_ROOT,
+    PPO_TRADITIONAL_ROOT,
 )
