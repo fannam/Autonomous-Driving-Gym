@@ -10,6 +10,9 @@ import torch
 from ..core.types import TrajectoryBatch
 
 
+MUTABLE_HEAD_PREFIXES = ("policy_head.", "value_head.")
+
+
 @dataclass(frozen=True)
 class PolicyAggregate:
     policy_index: int
@@ -38,11 +41,20 @@ def clone_state_dict(state_dict: dict[str, torch.Tensor]) -> dict[str, torch.Ten
 def _is_mutable_parameter(name: str, tensor: torch.Tensor) -> bool:
     if not tensor.is_floating_point():
         return False
-    if name.endswith("running_mean") or name.endswith("running_var"):
-        return False
-    if name.endswith("num_batches_tracked"):
-        return False
-    return True
+    return name.startswith(MUTABLE_HEAD_PREFIXES)
+
+
+def sync_shared_parameters(
+    state_dict: dict[str, torch.Tensor],
+    *,
+    shared_state_dict: dict[str, torch.Tensor],
+) -> dict[str, torch.Tensor]:
+    synced = clone_state_dict(state_dict)
+    for name, shared_value in shared_state_dict.items():
+        if name.startswith(MUTABLE_HEAD_PREFIXES):
+            continue
+        synced[name] = shared_value.detach().cpu().clone()
+    return synced
 
 
 def mutate_state_dict(
@@ -174,7 +186,10 @@ def evolve_population(
     )
 
     new_population = [
-        clone_state_dict(population[index])
+        sync_shared_parameters(
+            population[index],
+            shared_state_dict=ppo_state_dict,
+        )
         for index in elite_indices
     ]
 
@@ -182,9 +197,13 @@ def evolve_population(
         parent_rank = (len(new_population) - elite_count) % elite_count
         parent_index = elite_indices[parent_rank]
         child_seed = int(seed) + len(new_population)
+        synced_parent = sync_shared_parameters(
+            population[parent_index],
+            shared_state_dict=ppo_state_dict,
+        )
         new_population.append(
             mutate_state_dict(
-                population[parent_index],
+                synced_parent,
                 mutation_std=float(mutation_std),
                 seed=child_seed,
             )
@@ -209,4 +228,5 @@ __all__ = [
     "initialize_population",
     "mutate_state_dict",
     "rank_policy_aggregates",
+    "sync_shared_parameters",
 ]

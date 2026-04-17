@@ -15,7 +15,6 @@ class EpisodeMetrics:
     mean_speed_mps: float
     mean_speed_kph: float
     mean_normalized_speed: float
-    mean_right_lane_score: float
     mean_step_reward: float
     mean_raw_env_reward: float
     offroad_rate: float
@@ -57,7 +56,6 @@ class GenerationSummary:
     mean_speed_mps: float
     mean_speed_kph: float
     mean_normalized_speed: float
-    mean_right_lane_score: float
     mean_step_reward: float
     mean_raw_env_reward: float
     offroad_rate: float

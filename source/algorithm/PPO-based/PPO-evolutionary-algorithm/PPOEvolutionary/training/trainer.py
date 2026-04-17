@@ -484,9 +484,6 @@ class PPOEvolutionaryTrainer:
                     mean_normalized_speed=float(
                         np.mean([metric.mean_normalized_speed for metric in episode_metrics])
                     ),
-                    mean_right_lane_score=float(
-                        np.mean([metric.mean_right_lane_score for metric in episode_metrics])
-                    ),
                     mean_step_reward=float(
                         np.mean([metric.mean_step_reward for metric in episode_metrics])
                     ),
@@ -518,7 +515,6 @@ class PPOEvolutionaryTrainer:
                         f"mean_len={summary.mean_episode_length:.2f} "
                         f"mean_speed={summary.mean_speed_kph:.2f}kmh "
                         f"mean_norm_speed={summary.mean_normalized_speed:.3f} "
-                        f"lane_score={summary.mean_right_lane_score:.3f} "
                         f"step_reward={summary.mean_step_reward:.4f} "
                         f"raw_reward={summary.mean_raw_env_reward:.4f} "
                         f"offroad_rate={summary.offroad_rate:.3f} "

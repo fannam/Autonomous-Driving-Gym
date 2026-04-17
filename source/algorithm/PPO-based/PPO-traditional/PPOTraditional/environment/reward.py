@@ -4,7 +4,6 @@ from typing import Any
 
 import gymnasium as gym
 import numpy as np
-from highway_env.vehicle.controller import ControlledVehicle
 from highway_env.vehicle.kinematics import Vehicle
 
 from ..core.settings import RewardConfig
@@ -49,31 +48,30 @@ class TraditionalRewardWrapper(gym.Wrapper):
                 return float(np.min(speeds[:2])), float(np.max(speeds[:2]))
         return max(0.0, float(Vehicle.MIN_SPEED)), max(0.0, float(Vehicle.MAX_SPEED))
 
-    def _normalized_speed(self) -> float:
+    def _forward_speed(self) -> float:
         vehicle = self.unwrapped.vehicle
+        return float(vehicle.speed) * float(np.cos(float(vehicle.heading)))
+
+    def _normalized_speed(self) -> float:
         min_speed, max_speed = self._get_speed_bounds()
         span = max(1e-6, max_speed - min_speed)
-        forward_speed = float(vehicle.speed) * float(np.cos(float(vehicle.heading)))
+        forward_speed = self._forward_speed()
         return float(np.clip((forward_speed - min_speed) / span, 0.0, 1.0))
 
-    def _right_lane_score(self) -> float:
-        vehicle = self.unwrapped.vehicle
-        road = getattr(self.unwrapped, "road", None)
-        if road is None:
-            return 0.0
-        neighbours = road.network.all_side_lanes(vehicle.lane_index)
-        lane_index = (
-            vehicle.target_lane_index[2]
-            if isinstance(vehicle, ControlledVehicle)
-            else vehicle.lane_index[2]
-        )
-        return float(lane_index / max(len(neighbours) - 1, 1))
+    def _low_speed_ratio(self) -> float:
+        min_speed, _ = self._get_speed_bounds()
+        threshold_speed = float(self.reward_config.low_speed_threshold_multiplier) * float(min_speed)
+        threshold_speed = max(float(min_speed) + 1e-6, threshold_speed)
+        deficit = max(0.0, threshold_speed - self._forward_speed())
+        normalizer = max(1e-6, threshold_speed - float(min_speed))
+        return float(np.clip(deficit / normalizer, 0.0, 1.0))
 
     def compute_reward_terms(self) -> dict[str, float]:
         vehicle = self.unwrapped.vehicle
         return {
+            "forward_speed": self._forward_speed(),
             "normalized_speed": self._normalized_speed(),
-            "right_lane_score": self._right_lane_score(),
+            "low_speed_ratio": self._low_speed_ratio(),
             "collision": float(bool(getattr(vehicle, "crashed", False))),
             "offroad": float(not bool(getattr(vehicle, "on_road", True))),
         }
@@ -81,7 +79,7 @@ class TraditionalRewardWrapper(gym.Wrapper):
     def compute_shaped_reward(self, terms: dict[str, float]) -> float:
         return (
             float(self.reward_config.speed_weight) * float(terms["normalized_speed"])
-            + float(self.reward_config.right_lane_weight) * float(terms["right_lane_score"])
+            - float(self.reward_config.low_speed_penalty) * float(terms["low_speed_ratio"])
             - float(self.reward_config.collision_penalty) * float(terms["collision"])
             - float(self.reward_config.offroad_penalty) * float(terms["offroad"])
         )
@@ -94,8 +92,8 @@ class TraditionalRewardWrapper(gym.Wrapper):
 
         reward_terms = {
             "speed_reward": float(self.reward_config.speed_weight) * float(terms["normalized_speed"]),
-            "right_lane_reward": float(self.reward_config.right_lane_weight)
-            * float(terms["right_lane_score"]),
+            "low_speed_penalty": -float(self.reward_config.low_speed_penalty)
+            * float(terms["low_speed_ratio"]),
             "collision_penalty": -float(self.reward_config.collision_penalty)
             * float(terms["collision"]),
             "offroad_penalty": -float(self.reward_config.offroad_penalty) * float(terms["offroad"]),
@@ -104,8 +102,9 @@ class TraditionalRewardWrapper(gym.Wrapper):
         augmented_info.update(
             {
                 "reward_terms": reward_terms,
+                "forward_speed": float(terms["forward_speed"]),
                 "normalized_speed": float(terms["normalized_speed"]),
-                "right_lane_score": float(terms["right_lane_score"]),
+                "low_speed_ratio": float(terms["low_speed_ratio"]),
                 "collision": bool(terms["collision"]),
                 "offroad": bool(terms["offroad"]),
                 "raw_env_reward": float(raw_reward),

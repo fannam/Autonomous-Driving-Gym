@@ -112,7 +112,8 @@ DEFAULT_N_ACTIONS = _get_action_count(
 @dataclass(frozen=True)
 class RewardConfig:
     speed_weight: float = 1.0
-    right_lane_weight: float = 0.1
+    low_speed_penalty: float = 1.0
+    low_speed_threshold_multiplier: float = 1.2
     collision_penalty: float = 5.0
     offroad_penalty: float = 5.0
 
@@ -123,10 +124,10 @@ class RewardConfig:
 
 @dataclass(frozen=True)
 class NetworkConfig:
-    stem_channels: int = 32
-    downsample_channels: int = 64
-    latent_dim: int = 256
-    residual_blocks: int = 4
+    stem_channels: int = 48
+    downsample_channels: int = 96
+    latent_dim: int = 384
+    residual_blocks: int = 10
     dropout_p: float = 0.1
 
     @classmethod

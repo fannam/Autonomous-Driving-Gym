@@ -24,7 +24,6 @@
         "target_speeds": [18, 22, 26, 30, 34, 38]
       },
       "collision_reward": 0,
-      "right_lane_reward": 0,
       "left_lane_constraint": 0,
       "left_lane_reward": 0,
       "high_speed_reward": 0,
@@ -53,15 +52,16 @@
       },
       "reward": {
         "speed_weight": 1.0,
-        "right_lane_weight": 0.1,
+        "low_speed_penalty": 1.0,
+        "low_speed_threshold_multiplier": 1.2,
         "collision_penalty": 5.0,
         "offroad_penalty": 5.0
       },
       "network": {
-        "stem_channels": 32,
-        "downsample_channels": 64,
-        "latent_dim": 256,
-        "residual_blocks": 4,
+        "stem_channels": 48,
+        "downsample_channels": 96,
+        "latent_dim": 384,
+        "residual_blocks": 10,
         "dropout_p": 0.1
       },
       "rollout": {
@@ -92,15 +92,16 @@
       },
       "reward": {
         "speed_weight": 1.0,
-        "right_lane_weight": 0.1,
+        "low_speed_penalty": 1.0,
+        "low_speed_threshold_multiplier": 1.2,
         "collision_penalty": 5.0,
         "offroad_penalty": 5.0
       },
       "network": {
-        "stem_channels": 32,
-        "downsample_channels": 64,
-        "latent_dim": 256,
-        "residual_blocks": 4,
+        "stem_channels": 48,
+        "downsample_channels": 96,
+        "latent_dim": 384,
+        "residual_blocks": 10,
         "dropout_p": 0.0
       },
       "rollout": {

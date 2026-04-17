@@ -34,25 +34,47 @@ def test_reward_wrapper_normalizes_speed_from_target_range() -> None:
         wrapped_env.close()
 
 
-def test_reward_wrapper_uses_lane_position_and_penalties() -> None:
+def test_reward_wrapper_penalizes_low_speed() -> None:
     wrapped_env = _make_wrapped_env()
     try:
         wrapped_env.reset(seed=5)
         vehicle = wrapped_env.unwrapped.vehicle
-        from_node, to_node, _ = vehicle.lane_index
 
-        vehicle.lane_index = (from_node, to_node, 3)
-        vehicle.target_lane_index = vehicle.lane_index
+        vehicle.heading = 0.0
+        vehicle.speed = 18.0
+
+        slow_terms = wrapped_env.compute_reward_terms()
+        slow_reward = wrapped_env.compute_shaped_reward(slow_terms)
+
+        vehicle.speed = 21.6
+        threshold_terms = wrapped_env.compute_reward_terms()
+        threshold_reward = wrapped_env.compute_shaped_reward(threshold_terms)
+
+        assert abs(slow_terms["low_speed_ratio"] - 1.0) < 1e-6
+        assert abs(slow_reward - (-1.0)) < 1e-6
+        assert abs(threshold_terms["low_speed_ratio"] - 0.0) < 1e-6
+        assert threshold_reward > slow_reward
+    finally:
+        wrapped_env.close()
+
+
+def test_reward_wrapper_applies_collision_and_offroad_penalties() -> None:
+    wrapped_env = _make_wrapped_env()
+    try:
+        wrapped_env.reset(seed=7)
+        vehicle = wrapped_env.unwrapped.vehicle
+        vehicle.heading = 0.0
+        vehicle.speed = 38.0
         vehicle.crashed = True
         vehicle.position = np.asarray([vehicle.position[0], 1000.0], dtype=np.float32)
 
         terms = wrapped_env.compute_reward_terms()
         shaped_reward = wrapped_env.compute_shaped_reward(terms)
 
-        assert abs(terms["right_lane_score"] - 1.0) < 1e-6
+        assert abs(terms["low_speed_ratio"] - 0.0) < 1e-6
         assert terms["collision"] == 1.0
         assert terms["offroad"] == 1.0
-        assert shaped_reward <= -9.0
+        assert abs(shaped_reward - (-9.0)) < 1e-6
     finally:
         wrapped_env.close()
 
@@ -71,5 +93,6 @@ def test_reward_wrapper_tracks_episode_fitness_across_steps() -> None:
         assert abs((reward1 + reward2) - info2["episode_fitness"]) < 1e-6
         assert "raw_env_reward" in info1
         assert "reward_terms" in info2
+        assert "low_speed_penalty" in info2["reward_terms"]
     finally:
         wrapped_env.close()

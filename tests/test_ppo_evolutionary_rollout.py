@@ -46,7 +46,6 @@ def test_rollout_worker_returns_expected_schema() -> None:
     assert np.isfinite(trajectory.episode_metrics.mean_speed_mps)
     assert np.isfinite(trajectory.episode_metrics.mean_speed_kph)
     assert 0.0 <= trajectory.episode_metrics.mean_normalized_speed <= 1.0
-    assert 0.0 <= trajectory.episode_metrics.mean_right_lane_score <= 1.0
     assert 0.0 <= trajectory.episode_metrics.offroad_rate <= 1.0
 
 

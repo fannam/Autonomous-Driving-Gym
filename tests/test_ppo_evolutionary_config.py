@@ -18,7 +18,7 @@ def test_ppo_evolutionary_runtime_config_finds_package_layout() -> None:
 def test_ppo_evolutionary_settings_infer_observation_and_action_shape() -> None:
     assert TRAIN_CONFIG.observation_shape == (4, 100, 24)
     assert TRAIN_CONFIG.n_actions == 5
-    assert TRAIN_CONFIG.network.residual_blocks == 4
+    assert TRAIN_CONFIG.network.residual_blocks == 10
     assert EVALUATION_CONFIG.observation_shape == (4, 100, 24)
     assert EVALUATION_CONFIG.n_actions == 5
 

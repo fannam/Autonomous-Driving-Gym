@@ -32,6 +32,17 @@ _SOURCE_ROOT = _REPO_ROOT / "source"
 bootstrap_local_highway_env(_SOURCE_ROOT)
 
 
+_NATIVE_REWARD_OVERRIDES: dict[str, Any] = {
+    "right_lane_reward": 0.0,
+}
+
+
+def _disable_native_reward_shaping(env_config: dict[str, Any]) -> dict[str, Any]:
+    for key, value in _NATIVE_REWARD_OVERRIDES.items():
+        env_config[key] = copy.deepcopy(value)
+    return env_config
+
+
 @dataclass(frozen=True)
 class EnvironmentSpec:
     scenario_name: str
@@ -81,6 +92,7 @@ def build_env_spec(
         env_config = merge_config_dicts(env_config, stage_env_overrides)
     if env_config_overrides:
         env_config = merge_config_dicts(env_config, env_config_overrides)
+    env_config = _disable_native_reward_shaping(env_config)
 
     render_mode_to_use = (
         render_mode if render_mode is not None else environment.get("render_mode")
