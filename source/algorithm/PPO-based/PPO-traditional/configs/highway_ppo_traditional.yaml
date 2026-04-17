@@ -47,6 +47,7 @@
   },
   "presets": {
     "train": {
+      "render_mode": null,
       "env_overrides": {
         "terminate_on_success": false
       },

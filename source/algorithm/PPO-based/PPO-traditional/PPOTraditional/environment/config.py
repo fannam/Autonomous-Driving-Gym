@@ -94,9 +94,12 @@ def build_env_spec(
         env_config = merge_config_dicts(env_config, env_config_overrides)
     env_config = _disable_native_reward_shaping(env_config)
 
-    render_mode_to_use = (
-        render_mode if render_mode is not None else environment.get("render_mode")
-    )
+    if render_mode is not None:
+        render_mode_to_use = render_mode
+    elif "render_mode" in preset:
+        render_mode_to_use = preset.get("render_mode")
+    else:
+        render_mode_to_use = environment.get("render_mode")
     return EnvironmentSpec(
         scenario_name=scenario_to_use,
         env_id=env_id,
