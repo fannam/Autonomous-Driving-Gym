@@ -112,7 +112,7 @@ class ActorCriticNetwork(nn.Module):
         downsample_channels: int = 96,
         latent_dim: int = 384,
         residual_blocks: int = 10,
-        dropout_p: float = 0.1,
+        dropout_p: float = 0.2,
     ) -> None:
         super().__init__()
         self.input_channels = int(input_channels)

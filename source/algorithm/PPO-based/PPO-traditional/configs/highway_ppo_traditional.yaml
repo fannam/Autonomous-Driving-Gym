@@ -21,7 +21,7 @@
         "type": "DiscreteMetaAction",
         "longitudinal": true,
         "lateral": true,
-        "target_speeds": [18, 22, 26, 30, 34, 38]
+        "target_speeds": [22, 26, 30, 34, 38]
       },
       "collision_reward": 0,
       "left_lane_constraint": 0,
@@ -30,8 +30,8 @@
       "lane_change_reward": 0,
       "normalize_reward": false,
       "reward_speed_range": [18, 38],
-      "vehicles_density": 1.5,
-      "vehicles_count": 40,
+      "vehicles_density": 2.0,
+      "vehicles_count": 100,
       "lanes_count": 4,
       "road_speed_limit": 40,
       "policy_frequency": 1,
@@ -51,7 +51,7 @@
         "terminate_on_success": false
       },
       "reward": {
-        "speed_weight": 1.0,
+        "speed_weight": 2.0,
         "low_speed_penalty": 1.0,
         "low_speed_threshold_multiplier": 1.2,
         "collision_penalty": 5.0,
@@ -62,11 +62,11 @@
         "downsample_channels": 96,
         "latent_dim": 384,
         "residual_blocks": 10,
-        "dropout_p": 0.1
+        "dropout_p": 0.2
       },
       "rollout": {
         "n_envs": 8,
-        "steps_per_env": 64,
+        "steps_per_env": 160,
         "max_steps": null
       },
       "ppo": {
@@ -91,7 +91,7 @@
         "terminate_on_success": true
       },
       "reward": {
-        "speed_weight": 1.0,
+        "speed_weight": 2.0,
         "low_speed_penalty": 1.0,
         "low_speed_threshold_multiplier": 1.2,
         "collision_penalty": 5.0,
@@ -102,7 +102,7 @@
         "downsample_channels": 96,
         "latent_dim": 384,
         "residual_blocks": 10,
-        "dropout_p": 0.0
+        "dropout_p": 0.2
       },
       "rollout": {
         "n_envs": 1,

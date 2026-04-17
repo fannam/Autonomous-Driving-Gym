@@ -128,7 +128,7 @@ class NetworkConfig:
     downsample_channels: int = 96
     latent_dim: int = 384
     residual_blocks: int = 10
-    dropout_p: float = 0.1
+    dropout_p: float = 0.2
 
     @classmethod
     def from_dict(cls, raw_config: dict | None = None) -> "NetworkConfig":
