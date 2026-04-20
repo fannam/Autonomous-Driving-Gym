@@ -52,6 +52,9 @@ class PPOTraditionalTrainer:
         self.device = _get_training_device(device)
         self.verbose = bool(verbose)
         self.network = build_actor_critic(self.config).to(self.device)
+        # Dropout/BN are not expected in the policy but keep ``eval`` mode to make
+        # rollout and update pass identical distributions (PPO ratio assumption).
+        self.network.eval()
         self.optimizer = torch.optim.Adam(
             self.network.parameters(),
             lr=float(self.config.ppo.learning_rate),
@@ -60,9 +63,18 @@ class PPOTraditionalTrainer:
         self.metrics_history: list[dict[str, Any]] = []
         self.best_fitness = float("-inf")
         self.best_distance = float("-inf")
+        self.best_ema_fitness = float("-inf")
+        self.ema_fitness: float | None = None
         self.best_policy_state_dict = _clone_state_dict(self.network.state_dict())
         self.current_update = 0
         self.total_timesteps = 0
+
+    @staticmethod
+    def _format_action_mix(action_counts: dict[str, int], action_fractions: dict[str, float]) -> str:
+        return " ".join(
+            f"{label}={int(action_counts.get(label, 0))}({float(action_fractions.get(label, 0.0)):.3f})"
+            for label in action_counts
+        )
 
     def _resolve_artifact_path(self, path: str | Path) -> Path:
         raw_path = Path(path).expanduser()
@@ -88,6 +100,7 @@ class PPOTraditionalTrainer:
         log_probs = batch.log_probs.reshape(t_steps * n_envs)
         advantages = batch.advantages.reshape(t_steps * n_envs)
         returns = batch.returns.reshape(t_steps * n_envs)
+        old_values = batch.values.reshape(t_steps * n_envs)
 
         normalized_advantages = (advantages - advantages.mean()) / max(
             1e-8,
@@ -103,6 +116,11 @@ class PPOTraditionalTrainer:
                 device=self.device,
             ),
             "returns": torch.as_tensor(returns, dtype=torch.float32, device=self.device),
+            "old_values": torch.as_tensor(
+                old_values,
+                dtype=torch.float32,
+                device=self.device,
+            ),
         }
 
     def _ppo_update(self, batch: RolloutBatch) -> dict[str, float]:
@@ -112,6 +130,7 @@ class PPOTraditionalTrainer:
         old_log_probs = tensors["log_probs"]
         advantages = tensors["advantages"]
         returns = tensors["returns"]
+        old_values = tensors["old_values"]
 
         sample_count = int(obs.shape[0])
         if sample_count == 0:
@@ -122,7 +141,14 @@ class PPOTraditionalTrainer:
                 "approx_kl": 0.0,
             }
 
-        self.network.train()
+        value_clip_epsilon = getattr(self.config.ppo, "value_clip_epsilon", None)
+
+        # Keep the network in eval mode so that any stochastic layer (dropout,
+        # batch-norm) stays identical between rollout and update. This is critical
+        # for PPO: ``old_log_probs`` were produced under ``eval()`` in the collector
+        # and the new log-probs must use the same forward pass to keep the ratio
+        # computation faithful.
+        self.network.eval()
         total_policy_loss = 0.0
         total_value_loss = 0.0
         total_entropy = 0.0
@@ -141,8 +167,10 @@ class PPOTraditionalTrainer:
                 batch_old_log_probs = old_log_probs[batch_indices]
                 batch_advantages = advantages[batch_indices]
                 batch_returns = returns[batch_indices]
+                batch_old_values = old_values[batch_indices]
 
                 logits, values = self.network(batch_obs, return_logits=True)
+                values = values.squeeze(-1)
                 distribution = Categorical(logits=logits)
                 current_log_probs = distribution.log_prob(batch_actions)
                 entropy = distribution.entropy().mean()
@@ -156,7 +184,22 @@ class PPOTraditionalTrainer:
                     1.0 + float(self.config.ppo.clip_epsilon),
                 ) * batch_advantages
                 policy_loss = -torch.minimum(unclipped, clipped).mean()
-                value_loss = F.mse_loss(values.squeeze(-1), batch_returns)
+
+                if value_clip_epsilon is not None:
+                    value_clipped = batch_old_values + torch.clamp(
+                        values - batch_old_values,
+                        -float(value_clip_epsilon),
+                        float(value_clip_epsilon),
+                    )
+                    value_loss_unclipped = (values - batch_returns).pow(2)
+                    value_loss_clipped = (value_clipped - batch_returns).pow(2)
+                    value_loss = 0.5 * torch.maximum(
+                        value_loss_unclipped,
+                        value_loss_clipped,
+                    ).mean()
+                else:
+                    value_loss = F.mse_loss(values, batch_returns)
+
                 loss = (
                     policy_loss
                     + float(self.config.ppo.value_coef) * value_loss
@@ -185,7 +228,6 @@ class PPOTraditionalTrainer:
             if mean_epoch_kl > float(self.config.ppo.target_kl):
                 break
 
-        self.network.eval()
         return {
             "policy_loss": total_policy_loss / max(1, total_items),
             "value_loss": total_value_loss / max(1, total_items),
@@ -193,31 +235,32 @@ class PPOTraditionalTrainer:
             "approx_kl": total_kl / max(1, total_items),
         }
 
-    def _summarize_metrics(self, batch: RolloutBatch) -> tuple[float, float, float, float, float]:
+    def _summarize_metrics(self, batch: RolloutBatch) -> dict[str, float | int]:
         if batch.episode_metrics:
-            mean_fitness = float(np.mean([metrics.fitness for metrics in batch.episode_metrics]))
-            collision_rate = float(np.mean([float(metrics.collided) for metrics in batch.episode_metrics]))
-            success_rate = float(np.mean([float(metrics.success) for metrics in batch.episode_metrics]))
-            mean_distance = float(np.mean([metrics.distance_travelled for metrics in batch.episode_metrics]))
-            mean_episode_length = float(
-                np.mean([float(metrics.episode_length) for metrics in batch.episode_metrics])
-            )
-            return (
-                mean_fitness,
-                collision_rate,
-                success_rate,
-                mean_distance,
-                mean_episode_length,
-            )
+            return {
+                "mean_fitness": float(np.mean([metrics.fitness for metrics in batch.episode_metrics])),
+                "collision_rate": float(
+                    np.mean([float(metrics.collided) for metrics in batch.episode_metrics])
+                ),
+                "success_rate": float(
+                    np.mean([float(metrics.success) for metrics in batch.episode_metrics])
+                ),
+                "mean_distance": float(
+                    np.mean([metrics.distance_travelled for metrics in batch.episode_metrics])
+                ),
+                "mean_episode_length": float(
+                    np.mean([float(metrics.episode_length) for metrics in batch.episode_metrics])
+                ),
+            }
 
         per_env_batch_fitness = batch.rewards.sum(axis=0)
-        return (
-            float(np.mean(per_env_batch_fitness)),
-            0.0,
-            0.0,
-            0.0,
-            0.0,
-        )
+        return {
+            "mean_fitness": float(np.mean(per_env_batch_fitness)),
+            "collision_rate": 0.0,
+            "success_rate": 0.0,
+            "mean_distance": 0.0,
+            "mean_episode_length": 0.0,
+        }
 
     def save_checkpoint(self, path: str | Path | None = None) -> Path:
         output_path = self._resolve_artifact_path(path or self.config.model_path)
@@ -258,10 +301,17 @@ class PPOTraditionalTrainer:
         self.metrics_history = []
         self.best_fitness = float("-inf")
         self.best_distance = float("-inf")
+        self.best_ema_fitness = float("-inf")
+        self.ema_fitness = None
         self.best_policy_state_dict = _clone_state_dict(self.network.state_dict())
         self.current_update = 0
         self.total_timesteps = 0
         self._reset_metrics_log()
+
+        base_learning_rate = float(self.config.ppo.learning_rate)
+        total_updates = int(updates)
+        lr_anneal = bool(getattr(self.config.ppo, "lr_anneal", False))
+        ema_alpha = 0.1
 
         collector = VectorizedRolloutCollector(
             config_path=self.config_path,
@@ -271,11 +321,21 @@ class PPOTraditionalTrainer:
         )
 
         try:
-            for update_index in range(int(updates)):
+            for update_index in range(total_updates):
+                if lr_anneal and total_updates > 1:
+                    progress = update_index / max(1, total_updates - 1)
+                    current_lr = base_learning_rate * (1.0 - progress)
+                    current_lr = max(current_lr, 1e-6)
+                else:
+                    current_lr = base_learning_rate
+                for param_group in self.optimizer.param_groups:
+                    param_group["lr"] = current_lr
+
                 if self.verbose:
                     print(
                         f"[ppo-traditional] update={update_index + 1} "
-                        f"n_envs={resolved_n_envs} steps_per_env={resolved_steps_per_env}",
+                        f"n_envs={resolved_n_envs} steps_per_env={resolved_steps_per_env} "
+                        f"lr={current_lr:.6f}",
                         flush=True,
                     )
 
@@ -288,21 +348,29 @@ class PPOTraditionalTrainer:
                 ppo_metrics = self._ppo_update(batch)
                 self.total_timesteps += resolved_n_envs * resolved_steps_per_env
 
-                (
-                    mean_fitness,
-                    collision_rate,
-                    success_rate,
-                    mean_distance,
-                    mean_episode_length,
-                ) = self._summarize_metrics(batch)
+                summary_metrics = self._summarize_metrics(batch)
+                mean_fitness = float(summary_metrics["mean_fitness"])
+                collision_rate = float(summary_metrics["collision_rate"])
+                success_rate = float(summary_metrics["success_rate"])
+                mean_distance = float(summary_metrics["mean_distance"])
+                mean_episode_length = float(summary_metrics["mean_episode_length"])
+
+                if self.ema_fitness is None:
+                    self.ema_fitness = mean_fitness
+                else:
+                    self.ema_fitness = (
+                        ema_alpha * mean_fitness
+                        + (1.0 - ema_alpha) * float(self.ema_fitness)
+                    )
 
                 if (
-                    mean_fitness > self.best_fitness
+                    float(self.ema_fitness) > self.best_ema_fitness
                     or (
-                        np.isclose(mean_fitness, self.best_fitness)
+                        np.isclose(float(self.ema_fitness), self.best_ema_fitness)
                         and mean_distance > self.best_distance
                     )
                 ):
+                    self.best_ema_fitness = float(self.ema_fitness)
                     self.best_fitness = float(mean_fitness)
                     self.best_distance = float(mean_distance)
                     self.best_policy_state_dict = _clone_state_dict(self.network.state_dict())
@@ -312,14 +380,28 @@ class PPOTraditionalTrainer:
                     total_timesteps=int(self.total_timesteps),
                     best_fitness=float(self.best_fitness),
                     mean_fitness=float(mean_fitness),
+                    ema_fitness=float(self.ema_fitness),
+                    best_ema_fitness=float(self.best_ema_fitness),
+                    learning_rate=float(current_lr),
                     collision_rate=float(collision_rate),
                     success_rate=float(success_rate),
                     mean_distance=float(mean_distance),
                     mean_episode_length=float(mean_episode_length),
+                    mean_speed_mps=float(batch.mean_speed_mps),
+                    mean_speed_kph=float(batch.mean_speed_kph),
+                    mean_normalized_speed=float(batch.mean_normalized_speed),
+                    mean_low_speed_ratio=float(batch.mean_low_speed_ratio),
+                    mean_step_reward=float(batch.mean_step_reward),
+                    mean_raw_env_reward=float(batch.mean_raw_env_reward),
+                    offroad_rate=float(batch.offroad_rate),
+                    finished_episode_count=int(batch.finished_episode_count),
+                    sample_count=int(batch.actions.size),
                     policy_loss=float(ppo_metrics["policy_loss"]),
                     value_loss=float(ppo_metrics["value_loss"]),
                     entropy=float(ppo_metrics["entropy"]),
                     approx_kl=float(ppo_metrics["approx_kl"]),
+                    action_counts=dict(batch.action_counts),
+                    action_fractions=dict(batch.action_fractions),
                 )
                 self.metrics_history.append(summary.to_dict())
                 self._append_metrics_log(summary)
@@ -327,11 +409,33 @@ class PPOTraditionalTrainer:
 
                 checkpoint_path = self.save_checkpoint(save_path)
                 if self.verbose:
+                    action_mix = self._format_action_mix(
+                        summary.action_counts,
+                        summary.action_fractions,
+                    )
                     print(
                         "[ppo-traditional] "
+                        f"best_fitness={summary.best_fitness:.4f} "
                         f"mean_fitness={summary.mean_fitness:.4f} "
+                        f"ema_fitness={summary.ema_fitness:.4f} "
+                        f"best_ema={summary.best_ema_fitness:.4f} "
+                        f"collision_rate={summary.collision_rate:.3f} "
+                        f"success_rate={summary.success_rate:.3f} "
+                        f"mean_distance={summary.mean_distance:.2f} "
+                        f"mean_len={summary.mean_episode_length:.2f} "
+                        f"mean_speed={summary.mean_speed_kph:.2f}kmh "
+                        f"mean_norm_speed={summary.mean_normalized_speed:.3f} "
+                        f"mean_low_speed={summary.mean_low_speed_ratio:.3f} "
+                        f"step_reward={summary.mean_step_reward:.4f} "
+                        f"raw_reward={summary.mean_raw_env_reward:.4f} "
+                        f"offroad_rate={summary.offroad_rate:.3f} "
                         f"policy_loss={summary.policy_loss:.4f} "
                         f"value_loss={summary.value_loss:.4f} "
+                        f"entropy={summary.entropy:.4f} "
+                        f"approx_kl={summary.approx_kl:.4f} "
+                        f"finished_eps={summary.finished_episode_count} "
+                        f"samples={summary.sample_count} "
+                        f"actions={action_mix} "
                         f"checkpoint={checkpoint_path}",
                         flush=True,
                     )

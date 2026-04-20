@@ -8,7 +8,7 @@ import torch
 from gymnasium.vector import AsyncVectorEnv, SyncVectorEnv
 from torch.distributions import Categorical
 
-from ..core.runtime_config import load_runtime_config
+from ..core.runtime_config import get_environment_config, load_runtime_config
 from ..core.settings import load_stage_config
 from ..core.types import EpisodeMetrics, RolloutBatch
 from ..environment.config import init_env
@@ -62,30 +62,71 @@ def build_vector_env(
 def compute_gae(
     *,
     rewards: np.ndarray,
-    dones: np.ndarray,
     values: np.ndarray,
     next_values: np.ndarray,
     gamma: float,
     gae_lambda: float,
+    terminateds: np.ndarray | None = None,
+    truncateds: np.ndarray | None = None,
+    final_values: np.ndarray | None = None,
+    dones: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
+    """Generalized GAE that handles termination and truncation separately.
+
+    - ``terminateds``: true termination (crash/offroad). V(s_next)=0.
+    - ``truncateds``: time-limit truncation. Bootstraps from ``final_values[step]``.
+    - ``final_values``: V(s_final) at each truncated step; ignored elsewhere.
+    - ``dones``: legacy compatibility; if provided and ``terminateds`` is None, it is
+      treated as terminated (old behaviour without truncation bootstrap).
+    """
     rewards = np.asarray(rewards, dtype=np.float32)
-    dones = np.asarray(dones, dtype=np.float32)
     values = np.asarray(values, dtype=np.float32)
     next_values = np.asarray(next_values, dtype=np.float32)
+
+    if terminateds is None and truncateds is None:
+        if dones is None:
+            raise ValueError(
+                "compute_gae requires either terminateds/truncateds or the legacy dones array."
+            )
+        terminateds_arr = np.asarray(dones, dtype=np.float32)
+        truncateds_arr = np.zeros_like(terminateds_arr, dtype=np.float32)
+    else:
+        terminateds_arr = np.asarray(
+            terminateds if terminateds is not None else np.zeros_like(rewards),
+            dtype=np.float32,
+        )
+        truncateds_arr = np.asarray(
+            truncateds if truncateds is not None else np.zeros_like(rewards),
+            dtype=np.float32,
+        )
+
+    if final_values is None:
+        final_values_arr = np.zeros_like(rewards, dtype=np.float32)
+    else:
+        final_values_arr = np.asarray(final_values, dtype=np.float32)
+
+    done_mask = np.clip(terminateds_arr + truncateds_arr, 0.0, 1.0)
 
     advantages = np.zeros_like(rewards, dtype=np.float32)
     last_advantage = np.zeros(rewards.shape[1], dtype=np.float32)
     for index in range(rewards.shape[0] - 1, -1, -1):
         if index == rewards.shape[0] - 1:
-            next_non_terminal = 1.0 - dones[index]
-            next_value = next_values
+            next_value_chain = next_values
         else:
-            next_non_terminal = 1.0 - dones[index]
-            next_value = values[index + 1]
-        delta = rewards[index] + float(gamma) * next_value * next_non_terminal - values[index]
+            next_value_chain = values[index + 1]
+
+        # Boot-strap target:
+        #   terminated → 0
+        #   truncated  → V(final_obs)  (final_values)
+        #   otherwise  → next_value_chain
+        next_value = (
+            (1.0 - done_mask[index]) * next_value_chain
+            + truncateds_arr[index] * final_values_arr[index]
+        )
+        delta = rewards[index] + float(gamma) * next_value - values[index]
         last_advantage = (
             delta
-            + float(gamma) * float(gae_lambda) * next_non_terminal * last_advantage
+            + float(gamma) * float(gae_lambda) * (1.0 - done_mask[index]) * last_advantage
         )
         advantages[index] = last_advantage
     returns = advantages + values
@@ -137,6 +178,36 @@ def _extract_info_value(
     return values
 
 
+def _resolve_action_labels(
+    *,
+    stage: str,
+    raw_config: dict,
+) -> tuple[str, ...]:
+    environment = get_environment_config(stage=stage, raw_config=raw_config)
+    env_config = environment.get("config", {})
+    action_config = dict(env_config.get("action", {}) or {})
+    if action_config.get("type") == "MultiAgentAction":
+        action_config = dict(action_config.get("action_config", {}) or {})
+
+    action_type = str(action_config.get("type", "DiscreteMetaAction"))
+    longitudinal = bool(action_config.get("longitudinal", True))
+    lateral = bool(action_config.get("lateral", True))
+
+    if action_type == "DiscreteMetaAction":
+        if longitudinal and lateral:
+            return ("LANE_LEFT", "IDLE", "LANE_RIGHT", "FASTER", "SLOWER")
+        if longitudinal:
+            return ("SLOWER", "IDLE", "FASTER")
+        if lateral:
+            return ("LANE_LEFT", "IDLE", "LANE_RIGHT")
+
+    action_count = int(action_config.get("actions_per_axis", 5))
+    if action_type == "DiscreteAction":
+        axis_count = int(longitudinal) + int(lateral)
+        action_count = int(action_count ** max(1, axis_count))
+    return tuple(f"ACTION_{index}" for index in range(action_count))
+
+
 class VectorizedRolloutCollector:
     def __init__(
         self,
@@ -153,6 +224,10 @@ class VectorizedRolloutCollector:
         self.stage = stage
         self.n_envs = int(n_envs or self.config.rollout.n_envs)
         self.render_mode = render_mode
+        self.action_labels = _resolve_action_labels(
+            stage=stage,
+            raw_config=self.raw_config,
+        )
         self.vector_env = build_vector_env(
             config_path=config_path,
             stage=stage,
@@ -164,6 +239,11 @@ class VectorizedRolloutCollector:
         self.current_obs = np.asarray(self.current_obs, dtype=np.float32)
         self._running_fitness = np.zeros(self.n_envs, dtype=np.float32)
         self._running_lengths = np.zeros(self.n_envs, dtype=np.int32)
+        self._running_speed_sum = np.zeros(self.n_envs, dtype=np.float32)
+        self._running_normalized_speed_sum = np.zeros(self.n_envs, dtype=np.float32)
+        self._running_low_speed_ratio_sum = np.zeros(self.n_envs, dtype=np.float32)
+        self._running_raw_env_reward_sum = np.zeros(self.n_envs, dtype=np.float32)
+        self._running_offroad_steps = np.zeros(self.n_envs, dtype=np.int32)
 
     def close(self) -> None:
         self.vector_env.close()
@@ -185,8 +265,16 @@ class VectorizedRolloutCollector:
         log_prob_buffer = np.zeros((rollout_steps, self.n_envs), dtype=np.float32)
         reward_buffer = np.zeros((rollout_steps, self.n_envs), dtype=np.float32)
         done_buffer = np.zeros((rollout_steps, self.n_envs), dtype=np.bool_)
+        terminated_buffer = np.zeros((rollout_steps, self.n_envs), dtype=np.bool_)
+        truncated_buffer = np.zeros((rollout_steps, self.n_envs), dtype=np.bool_)
         value_buffer = np.zeros((rollout_steps, self.n_envs), dtype=np.float32)
+        final_value_buffer = np.zeros((rollout_steps, self.n_envs), dtype=np.float32)
         episode_metrics: list[EpisodeMetrics] = []
+        batch_speed_sum = 0.0
+        batch_normalized_speed_sum = 0.0
+        batch_low_speed_ratio_sum = 0.0
+        batch_raw_env_reward_sum = 0.0
+        batch_offroad_steps = 0
 
         for step_index in range(rollout_steps):
             obs_buffer[step_index] = self.current_obs
@@ -206,16 +294,106 @@ class VectorizedRolloutCollector:
             log_prob_buffer[step_index] = log_probs
             reward_buffer[step_index] = rewards
             done_buffer[step_index] = dones
+            terminated_buffer[step_index] = terminated
+            truncated_buffer[step_index] = truncated
             value_buffer[step_index] = values.squeeze(-1).detach().cpu().numpy().astype(
                 np.float32,
                 copy=False,
             )
 
+            truncated_env_indices = np.nonzero(truncated)[0]
+            if truncated_env_indices.size > 0:
+                final_obs_array = info.get("final_obs")
+                if final_obs_array is not None:
+                    final_obs_batch = np.stack(
+                        [
+                            np.asarray(final_obs_array[env_idx], dtype=np.float32)
+                            for env_idx in truncated_env_indices
+                        ],
+                        axis=0,
+                    )
+                    final_obs_tensor = torch.as_tensor(
+                        final_obs_batch,
+                        dtype=torch.float32,
+                        device=device_obj,
+                    )
+                    with torch.no_grad():
+                        _, final_values_tensor = network(
+                            final_obs_tensor,
+                            return_logits=True,
+                        )
+                    final_values_np = (
+                        final_values_tensor.squeeze(-1)
+                        .detach()
+                        .cpu()
+                        .numpy()
+                        .astype(np.float32, copy=False)
+                    )
+                    for local_idx, env_idx in enumerate(truncated_env_indices):
+                        final_value_buffer[step_index, env_idx] = final_values_np[local_idx]
+
             self._running_fitness += rewards
             self._running_lengths += 1
 
             final_info = info.get("final_info")
+            for env_index in range(self.n_envs):
+                step_info_payload = final_info if bool(dones[env_index]) else info
+                forward_speed = float(
+                    _extract_info_value(
+                        step_info_payload,
+                        "forward_speed",
+                        env_index,
+                        default=0.0,
+                    )
+                )
+                normalized_speed = float(
+                    _extract_info_value(
+                        step_info_payload,
+                        "normalized_speed",
+                        env_index,
+                        default=0.0,
+                    )
+                )
+                low_speed_ratio = float(
+                    _extract_info_value(
+                        step_info_payload,
+                        "low_speed_ratio",
+                        env_index,
+                        default=0.0,
+                    )
+                )
+                raw_env_reward = float(
+                    _extract_info_value(
+                        step_info_payload,
+                        "raw_env_reward",
+                        env_index,
+                        default=0.0,
+                    )
+                )
+                offroad = bool(
+                    _extract_info_value(
+                        step_info_payload,
+                        "offroad",
+                        env_index,
+                        default=False,
+                    )
+                )
+
+                self._running_speed_sum[env_index] += forward_speed
+                self._running_normalized_speed_sum[env_index] += normalized_speed
+                self._running_low_speed_ratio_sum[env_index] += low_speed_ratio
+                self._running_raw_env_reward_sum[env_index] += raw_env_reward
+                self._running_offroad_steps[env_index] += int(offroad)
+
+                batch_speed_sum += forward_speed
+                batch_normalized_speed_sum += normalized_speed
+                batch_low_speed_ratio_sum += low_speed_ratio
+                batch_raw_env_reward_sum += raw_env_reward
+                batch_offroad_steps += int(offroad)
+
             for env_index in np.nonzero(dones)[0]:
+                episode_length = max(1, int(self._running_lengths[env_index]))
+                episode_length_float = float(episode_length)
                 metrics = EpisodeMetrics(
                     fitness=float(
                         _extract_info_value(
@@ -249,13 +427,31 @@ class VectorizedRolloutCollector:
                             default=0.0,
                         )
                     ),
-                    episode_length=int(self._running_lengths[env_index]),
+                    episode_length=episode_length,
+                    mean_speed_mps=float(self._running_speed_sum[env_index] / episode_length_float),
+                    mean_speed_kph=float(self._running_speed_sum[env_index] * 3.6 / episode_length_float),
+                    mean_normalized_speed=float(
+                        self._running_normalized_speed_sum[env_index] / episode_length_float
+                    ),
+                    mean_low_speed_ratio=float(
+                        self._running_low_speed_ratio_sum[env_index] / episode_length_float
+                    ),
+                    mean_step_reward=float(self._running_fitness[env_index] / episode_length_float),
+                    mean_raw_env_reward=float(
+                        self._running_raw_env_reward_sum[env_index] / episode_length_float
+                    ),
+                    offroad_rate=float(self._running_offroad_steps[env_index] / episode_length_float),
                     terminated=bool(terminated[env_index]),
                     truncated=bool(truncated[env_index]),
                 )
                 episode_metrics.append(metrics)
                 self._running_fitness[env_index] = 0.0
                 self._running_lengths[env_index] = 0
+                self._running_speed_sum[env_index] = 0.0
+                self._running_normalized_speed_sum[env_index] = 0.0
+                self._running_low_speed_ratio_sum[env_index] = 0.0
+                self._running_raw_env_reward_sum[env_index] = 0.0
+                self._running_offroad_steps[env_index] = 0
 
             self.current_obs = next_obs
 
@@ -269,13 +465,28 @@ class VectorizedRolloutCollector:
 
         advantages, returns = compute_gae(
             rewards=reward_buffer,
-            dones=done_buffer,
+            terminateds=terminated_buffer,
+            truncateds=truncated_buffer,
+            final_values=final_value_buffer,
             values=value_buffer,
             next_values=next_values_array,
             gamma=float(self.config.ppo.gamma),
             gae_lambda=float(self.config.ppo.gae_lambda),
         )
 
+        total_samples = max(1, rollout_steps * self.n_envs)
+        action_index_counts = np.bincount(
+            action_buffer.reshape(-1),
+            minlength=len(self.action_labels),
+        )
+        action_counts = {
+            label: int(action_index_counts[index])
+            for index, label in enumerate(self.action_labels)
+        }
+        action_fractions = {
+            label: float(action_counts[label] / total_samples)
+            for label in self.action_labels
+        }
         return RolloutBatch(
             obs=obs_buffer,
             actions=action_buffer,
@@ -286,6 +497,16 @@ class VectorizedRolloutCollector:
             advantages=advantages,
             returns=returns,
             episode_metrics=tuple(episode_metrics),
+            mean_speed_mps=float(batch_speed_sum / total_samples),
+            mean_speed_kph=float(batch_speed_sum * 3.6 / total_samples),
+            mean_normalized_speed=float(batch_normalized_speed_sum / total_samples),
+            mean_low_speed_ratio=float(batch_low_speed_ratio_sum / total_samples),
+            mean_step_reward=float(np.mean(reward_buffer, dtype=np.float32)),
+            mean_raw_env_reward=float(batch_raw_env_reward_sum / total_samples),
+            offroad_rate=float(batch_offroad_steps / total_samples),
+            finished_episode_count=int(len(episode_metrics)),
+            action_counts=action_counts,
+            action_fractions=action_fractions,
         )
 
 
@@ -305,6 +526,12 @@ def run_episode(
     truncated = False
     episode_info = dict(info)
     step_count = 0
+    speed_sum_mps = 0.0
+    normalized_speed_sum = 0.0
+    low_speed_ratio_sum = 0.0
+    raw_env_reward_sum = 0.0
+    shaped_reward_sum = 0.0
+    offroad_steps = 0
 
     while not (terminated or truncated):
         if max_steps is not None and step_count >= int(max_steps):
@@ -318,17 +545,31 @@ def run_episode(
                 return_logits=True,
             )
         action, _ = _sample_actions(logits, deterministic=deterministic)
-        obs, _, terminated, truncated, episode_info = env.step(int(action[0]))
+        obs, reward, terminated, truncated, episode_info = env.step(int(action[0]))
         if render:
             env.render()
+        shaped_reward_sum += float(reward)
+        speed_sum_mps += float(episode_info.get("forward_speed", 0.0))
+        normalized_speed_sum += float(episode_info.get("normalized_speed", 0.0))
+        low_speed_ratio_sum += float(episode_info.get("low_speed_ratio", 0.0))
+        raw_env_reward_sum += float(episode_info.get("raw_env_reward", 0.0))
+        offroad_steps += int(bool(episode_info.get("offroad", False)))
         step_count += 1
 
+    step_count_float = float(max(1, step_count))
     return EpisodeMetrics(
         fitness=float(episode_info.get("episode_fitness", 0.0)),
         collided=bool(episode_info.get("collision", episode_info.get("crashed", False))),
         success=bool(episode_info.get("success", False)),
         distance_travelled=float(episode_info.get("distance_travelled", 0.0)),
         episode_length=int(step_count),
+        mean_speed_mps=float(speed_sum_mps / step_count_float),
+        mean_speed_kph=float(speed_sum_mps * 3.6 / step_count_float),
+        mean_normalized_speed=float(normalized_speed_sum / step_count_float),
+        mean_low_speed_ratio=float(low_speed_ratio_sum / step_count_float),
+        mean_step_reward=float(shaped_reward_sum / step_count_float),
+        mean_raw_env_reward=float(raw_env_reward_sum / step_count_float),
+        offroad_rate=float(offroad_steps / step_count_float),
         terminated=bool(terminated),
         truncated=bool(truncated),
     )

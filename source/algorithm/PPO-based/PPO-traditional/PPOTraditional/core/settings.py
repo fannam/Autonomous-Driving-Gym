@@ -116,6 +116,11 @@ class RewardConfig:
     low_speed_threshold_multiplier: float = 1.2
     collision_penalty: float = 5.0
     offroad_penalty: float = 5.0
+    lane_change_reward: float = 0.0
+    lane_change_cooldown: int = 10
+    overtake_reward: float = 0.0
+    overtake_range: float = 60.0
+    overtake_clearance: float = 0.0
 
     @classmethod
     def from_dict(cls, raw_config: dict | None = None) -> "RewardConfig":
@@ -152,12 +157,14 @@ class PPOConfig:
     gamma: float = 0.99
     gae_lambda: float = 0.95
     clip_epsilon: float = 0.2
-    ppo_epochs: int = 2
+    ppo_epochs: int = 4
     minibatch_size: int = 128
-    entropy_coef: float = 0.01
+    entropy_coef: float = 0.02
     value_coef: float = 0.5
+    value_clip_epsilon: float | None = 0.2
     max_grad_norm: float = 0.5
-    target_kl: float = 0.02
+    target_kl: float = 0.03
+    lr_anneal: bool = True
 
     @classmethod
     def from_dict(cls, raw_config: dict | None = None) -> "PPOConfig":
@@ -238,6 +245,7 @@ class PPOTraditionalConfig:
         )
         data["n_actions"] = int(data.get("n_actions", default_n_actions))
         data.pop("env_overrides", None)
+        data.pop("render_mode", None)
         data["reward"] = RewardConfig.from_dict(data.pop("reward", {}))
         data["network"] = NetworkConfig.from_dict(data.pop("network", {}))
         data["rollout"] = RolloutConfig.from_dict(data.pop("rollout", {}))

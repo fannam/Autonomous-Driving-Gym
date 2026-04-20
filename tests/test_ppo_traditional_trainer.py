@@ -40,13 +40,17 @@ def _make_smoke_config(tmp_path: Path) -> tuple[Path, Path, Path]:
 
 def test_compute_gae_keeps_advantages_partitioned_per_env() -> None:
     rewards = np.asarray([[1.0, 2.0], [3.0, 4.0]], dtype=np.float32)
-    dones = np.asarray([[False, True], [False, False]], dtype=np.bool_)
+    terminateds = np.asarray([[False, True], [False, False]], dtype=np.bool_)
+    truncateds = np.zeros_like(terminateds)
     values = np.asarray([[0.5, 1.0], [1.5, 2.0]], dtype=np.float32)
+    final_values = np.zeros_like(values)
     next_values = np.asarray([2.5, 3.0], dtype=np.float32)
 
     advantages, returns = compute_gae(
         rewards=rewards,
-        dones=dones,
+        terminateds=terminateds,
+        truncateds=truncateds,
+        final_values=final_values,
         values=values,
         next_values=next_values,
         gamma=0.99,
@@ -61,6 +65,31 @@ def test_compute_gae_keeps_advantages_partitioned_per_env() -> None:
     )
     assert np.isfinite(advantages).all()
     assert np.isfinite(returns).all()
+
+
+def test_compute_gae_bootstraps_on_truncation() -> None:
+    rewards = np.asarray([[1.0], [2.0]], dtype=np.float32)
+    terminateds = np.asarray([[False], [False]], dtype=np.bool_)
+    truncateds = np.asarray([[False], [True]], dtype=np.bool_)
+    values = np.asarray([[0.5], [1.0]], dtype=np.float32)
+    final_values = np.asarray([[0.0], [5.0]], dtype=np.float32)
+    next_values = np.asarray([10.0], dtype=np.float32)
+
+    advantages, _ = compute_gae(
+        rewards=rewards,
+        terminateds=terminateds,
+        truncateds=truncateds,
+        final_values=final_values,
+        values=values,
+        next_values=next_values,
+        gamma=0.99,
+        gae_lambda=0.95,
+    )
+
+    # Truncation at step 1 should bootstrap from ``final_values`` (5.0),
+    # not from ``next_values`` (10.0) and not from 0.
+    expected_last = 2.0 + 0.99 * 5.0 - 1.0
+    assert np.isclose(advantages[1, 0], expected_last)
 
 
 @pytest.fixture(scope="module")
@@ -98,6 +127,15 @@ def test_trainer_smoke_fit_writes_checkpoint_and_metrics(trained_smoke_run) -> N
     assert "best_fitness" in summaries[0]
     assert "policy_loss" in summaries[0]
     assert "total_timesteps" in summaries[0]
+    assert "action_counts" in summaries[0]
+    assert "action_fractions" in summaries[0]
+    assert tuple(summaries[0]["action_counts"].keys()) == (
+        "LANE_LEFT",
+        "IDLE",
+        "LANE_RIGHT",
+        "FASTER",
+        "SLOWER",
+    )
 
 
 def test_evaluation_smoke_loads_checkpoint_and_reports_metrics(trained_smoke_run) -> None:

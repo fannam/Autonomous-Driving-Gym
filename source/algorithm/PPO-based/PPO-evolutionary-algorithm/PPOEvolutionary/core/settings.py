@@ -254,6 +254,7 @@ class PPOEvolutionaryConfig:
         )
         data["n_actions"] = int(data.get("n_actions", default_n_actions))
         data.pop("env_overrides", None)
+        data.pop("render_mode", None)
         data["reward"] = RewardConfig.from_dict(data.pop("reward", {}))
         data["network"] = NetworkConfig.from_dict(data.pop("network", {}))
         data["rollout"] = RolloutConfig.from_dict(data.pop("rollout", {}))

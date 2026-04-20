@@ -21,7 +21,7 @@
         "type": "DiscreteMetaAction",
         "longitudinal": true,
         "lateral": true,
-        "target_speeds": [22, 26, 30, 34, 38]
+        "target_speeds": [18, 22, 26, 30, 34, 38]
       },
       "collision_reward": 0,
       "left_lane_constraint": 0,
@@ -30,8 +30,8 @@
       "lane_change_reward": 0,
       "normalize_reward": false,
       "reward_speed_range": [18, 38],
-      "vehicles_density": 2.0,
-      "vehicles_count": 100,
+      "vehicles_density": 1.5,
+      "vehicles_count": 40,
       "lanes_count": 4,
       "road_speed_limit": 40,
       "policy_frequency": 1,
@@ -52,18 +52,23 @@
         "terminate_on_success": false
       },
       "reward": {
-        "speed_weight": 2.0,
-        "low_speed_penalty": 1.0,
-        "low_speed_threshold_multiplier": 1.2,
-        "collision_penalty": 5.0,
-        "offroad_penalty": 5.0
+        "speed_weight": 2.5,
+        "low_speed_penalty": 1.5,
+        "low_speed_threshold_multiplier": 1.5,
+        "collision_penalty": 6.0,
+        "offroad_penalty": 6.0,
+        "lane_change_reward": 0.1,
+        "lane_change_cooldown": 5,
+        "overtake_reward": 2.0,
+        "overtake_range": 60.0,
+        "overtake_clearance": 0.0
       },
       "network": {
         "stem_channels": 48,
         "downsample_channels": 96,
         "latent_dim": 384,
         "residual_blocks": 10,
-        "dropout_p": 0.2
+        "dropout_p": 0.0
       },
       "rollout": {
         "n_envs": 8,
@@ -75,12 +80,14 @@
         "gamma": 0.99,
         "gae_lambda": 0.95,
         "clip_epsilon": 0.2,
-        "ppo_epochs": 2,
+        "ppo_epochs": 4,
         "minibatch_size": 128,
-        "entropy_coef": 0.01,
+        "entropy_coef": 0.03,
         "value_coef": 0.5,
+        "value_clip_epsilon": 0.2,
         "max_grad_norm": 0.5,
-        "target_kl": 0.02
+        "target_kl": 0.03,
+        "lr_anneal": true
       },
       "logging": {
         "metrics_path": "outputs/ppo_traditional_metrics.jsonl"
@@ -92,18 +99,23 @@
         "terminate_on_success": true
       },
       "reward": {
-        "speed_weight": 2.0,
-        "low_speed_penalty": 1.0,
-        "low_speed_threshold_multiplier": 1.2,
-        "collision_penalty": 5.0,
-        "offroad_penalty": 5.0
+        "speed_weight": 2.5,
+        "low_speed_penalty": 1.5,
+        "low_speed_threshold_multiplier": 1.5,
+        "collision_penalty": 6.0,
+        "offroad_penalty": 6.0,
+        "lane_change_reward": 0.1,
+        "lane_change_cooldown": 5,
+        "overtake_reward": 2.0,
+        "overtake_range": 60.0,
+        "overtake_clearance": 0.0
       },
       "network": {
         "stem_channels": 48,
         "downsample_channels": 96,
         "latent_dim": 384,
         "residual_blocks": 10,
-        "dropout_p": 0.2
+        "dropout_p": 0.0
       },
       "rollout": {
         "n_envs": 1,
@@ -115,12 +127,14 @@
         "gamma": 0.99,
         "gae_lambda": 0.95,
         "clip_epsilon": 0.2,
-        "ppo_epochs": 2,
+        "ppo_epochs": 4,
         "minibatch_size": 128,
-        "entropy_coef": 0.01,
+        "entropy_coef": 0.03,
         "value_coef": 0.5,
+        "value_clip_epsilon": 0.2,
         "max_grad_norm": 0.5,
-        "target_kl": 0.02
+        "target_kl": 0.03,
+        "lr_anneal": false
       },
       "logging": {
         "metrics_path": "outputs/ppo_traditional_eval_metrics.jsonl"

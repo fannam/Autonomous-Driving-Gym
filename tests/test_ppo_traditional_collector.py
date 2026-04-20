@@ -60,6 +60,15 @@ def test_collector_returns_expected_vectorized_schema() -> None:
     assert batch.returns.shape == (3, 2)
     assert np.isfinite(batch.log_probs).all()
     assert np.isfinite(batch.values).all()
+    assert tuple(batch.action_counts.keys()) == (
+        "LANE_LEFT",
+        "IDLE",
+        "LANE_RIGHT",
+        "FASTER",
+        "SLOWER",
+    )
+    assert sum(batch.action_counts.values()) == batch.actions.size
+    assert abs(sum(batch.action_fractions.values()) - 1.0) < 1e-6
 
 
 def test_collector_is_seed_deterministic_in_evaluation_mode() -> None:

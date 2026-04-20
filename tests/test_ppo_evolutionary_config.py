@@ -33,5 +33,7 @@ def test_ppo_evolutionary_stage_env_overrides_success_termination() -> None:
 
     assert train_spec.config["terminate_on_success"] is False
     assert evaluation_spec.config["terminate_on_success"] is True
+    assert train_spec.render_mode is None
+    assert evaluation_spec.render_mode == "rgb_array"
     assert train_spec.config["action"]["type"] == "DiscreteMetaAction"
     assert train_spec.config["action"]["target_speeds"] == [18, 22, 26, 30, 34, 38]
