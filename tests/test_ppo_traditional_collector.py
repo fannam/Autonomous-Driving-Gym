@@ -39,13 +39,12 @@ def test_collector_returns_expected_vectorized_schema() -> None:
         stage="train",
         n_envs=2,
         seed_start=23,
+        device="cpu",
     )
     try:
         batch = collector.collect(
             _build_network(),
-            device="cpu",
             steps_per_env=3,
-            deterministic=False,
         )
     finally:
         collector.close()
@@ -79,26 +78,22 @@ def test_collector_is_seed_deterministic_in_evaluation_mode() -> None:
         stage="train",
         n_envs=2,
         seed_start=31,
+        device="cpu",
     )
     collector_b = VectorizedRolloutCollector(
         config_path=CONFIG_PATH,
         stage="train",
         n_envs=2,
         seed_start=31,
+        device="cpu",
     )
     try:
-        batch_a = collector_a.collect(
-            network,
-            device="cpu",
-            steps_per_env=3,
-            deterministic=True,
-        )
-        batch_b = collector_b.collect(
-            network,
-            device="cpu",
-            steps_per_env=3,
-            deterministic=True,
-        )
+        # Stochastic sampling là bắt buộc trong collect (PPO ratio yêu cầu),
+        # nên seed torch RNG để đảm bảo reproducibility giữa hai lần chạy.
+        torch.manual_seed(0)
+        batch_a = collector_a.collect(network, steps_per_env=3)
+        torch.manual_seed(0)
+        batch_b = collector_b.collect(network, steps_per_env=3)
     finally:
         collector_a.close()
         collector_b.close()
@@ -115,13 +110,13 @@ def test_collector_records_episode_metrics_when_env_autoresets(tmp_path) -> None
         stage="train",
         n_envs=2,
         seed_start=47,
+        device="cpu",
     )
     try:
+        torch.manual_seed(0)
         batch = collector.collect(
             _build_network(),
-            device="cpu",
             steps_per_env=12,
-            deterministic=True,
         )
     finally:
         collector.close()

@@ -52,8 +52,8 @@ class PPOTraditionalTrainer:
         self.device = _get_training_device(device)
         self.verbose = bool(verbose)
         self.network = build_actor_critic(self.config).to(self.device)
-        # Dropout/BN are not expected in the policy but keep ``eval`` mode to make
-        # rollout and update pass identical distributions (PPO ratio assumption).
+        # Mặc định để eval() vì rollout collector chạy đầu tiên và muốn dropout tắt
+        # (old_log_prob phải tương ứng với forward pass tất định).
         self.network.eval()
         self.optimizer = torch.optim.Adam(
             self.network.parameters(),
@@ -143,12 +143,10 @@ class PPOTraditionalTrainer:
 
         value_clip_epsilon = getattr(self.config.ppo, "value_clip_epsilon", None)
 
-        # Keep the network in eval mode so that any stochastic layer (dropout,
-        # batch-norm) stays identical between rollout and update. This is critical
-        # for PPO: ``old_log_probs`` were produced under ``eval()`` in the collector
-        # and the new log-probs must use the same forward pass to keep the ratio
-        # computation faithful.
-        self.network.eval()
+        # Bật train() để dropout/BN hoạt động trong update (theo SB3). Old_log_probs
+        # đã được lấy ở eval() trong collector — đây là sự đánh đổi chấp nhận được
+        # vì entropy bonus và regularization sẽ giữ policy ổn định.
+        self.network.train()
         total_policy_loss = 0.0
         total_value_loss = 0.0
         total_entropy = 0.0
@@ -227,6 +225,9 @@ class PPOTraditionalTrainer:
             mean_epoch_kl = epoch_kl_sum / max(1, epoch_items)
             if mean_epoch_kl > float(self.config.ppo.target_kl):
                 break
+
+        # Trả lại eval() cho collect kế tiếp (và mọi forward pass tất định).
+        self.network.eval()
 
         return {
             "policy_loss": total_policy_loss / max(1, total_items),
@@ -318,6 +319,7 @@ class PPOTraditionalTrainer:
             stage="train",
             n_envs=resolved_n_envs,
             seed_start=int(seed_start),
+            device=self.device,
         )
 
         try:
@@ -341,9 +343,7 @@ class PPOTraditionalTrainer:
 
                 batch = collector.collect(
                     self.network,
-                    device=self.device,
                     steps_per_env=resolved_steps_per_env,
-                    deterministic=False,
                 )
                 ppo_metrics = self._ppo_update(batch)
                 self.total_timesteps += resolved_n_envs * resolved_steps_per_env
