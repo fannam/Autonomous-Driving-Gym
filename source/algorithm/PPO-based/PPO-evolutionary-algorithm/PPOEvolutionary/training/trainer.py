@@ -149,51 +149,60 @@ class PPOEvolutionaryTrainer:
         behavior_log_prob_chunks: list[np.ndarray] = []
         return_chunks: list[np.ndarray] = []
         advantage_chunks: list[np.ndarray] = []
+        value_chunks: list[np.ndarray] = []
+        policy_index_chunks: list[np.ndarray] = []
 
-        self.network.eval()
-        with torch.no_grad():
-            for trajectory in trajectories:
-                if trajectory.obs.size == 0:
-                    continue
+        for trajectory in trajectories:
+            if trajectory.obs.size == 0:
+                continue
 
-                obs_tensor = torch.as_tensor(
-                    trajectory.obs,
-                    dtype=torch.float32,
-                    device=self.device,
-                )
-                _, values = self.network(obs_tensor, return_logits=True)
-                next_obs_tensor = torch.as_tensor(
-                    trajectory.last_obs[None, ...],
-                    dtype=torch.float32,
-                    device=self.device,
-                )
-                _, next_value = self.network(next_obs_tensor, return_logits=True)
+            values_np = np.asarray(trajectory.values, dtype=np.float32)
+            bootstrap_value = (
+                0.0
+                if bool(trajectory.dones[-1])
+                else float(trajectory.last_value)
+            )
+            advantages, returns = _compute_gae(
+                rewards=trajectory.rewards.astype(np.float32, copy=False),
+                dones=trajectory.dones.astype(np.float32, copy=False),
+                values=values_np,
+                next_value=bootstrap_value,
+                gamma=float(self.config.ppo.gamma),
+                gae_lambda=float(self.config.ppo.gae_lambda),
+            )
 
-                values_np = values.squeeze(-1).detach().cpu().numpy().astype(np.float32, copy=False)
-                bootstrap_value = 0.0 if bool(trajectory.dones[-1]) else float(next_value.item())
-                advantages, returns = _compute_gae(
-                    rewards=trajectory.rewards.astype(np.float32, copy=False),
-                    dones=trajectory.dones.astype(np.float32, copy=False),
-                    values=values_np,
-                    next_value=bootstrap_value,
-                    gamma=float(self.config.ppo.gamma),
-                    gae_lambda=float(self.config.ppo.gae_lambda),
-                )
-
-                obs_chunks.append(trajectory.obs.astype(np.float32, copy=False))
-                action_chunks.append(trajectory.actions.astype(np.int64, copy=False))
-                behavior_log_prob_chunks.append(
-                    trajectory.behavior_log_probs.astype(np.float32, copy=False)
-                )
-                return_chunks.append(returns.astype(np.float32, copy=False))
-                advantage_chunks.append(advantages.astype(np.float32, copy=False))
+            obs_chunks.append(trajectory.obs.astype(np.float32, copy=False))
+            action_chunks.append(trajectory.actions.astype(np.int64, copy=False))
+            behavior_log_prob_chunks.append(
+                trajectory.behavior_log_probs.astype(np.float32, copy=False)
+            )
+            return_chunks.append(returns.astype(np.float32, copy=False))
+            advantage_chunks.append(advantages.astype(np.float32, copy=False))
+            value_chunks.append(values_np)
+            policy_index_chunks.append(
+                np.full(len(advantages), int(trajectory.policy_index), dtype=np.int64)
+            )
 
         obs = np.concatenate(obs_chunks, axis=0)
         actions = np.concatenate(action_chunks, axis=0)
         behavior_log_probs = np.concatenate(behavior_log_prob_chunks, axis=0)
         returns = np.concatenate(return_chunks, axis=0)
         advantages = np.concatenate(advantage_chunks, axis=0)
-        advantages = (advantages - advantages.mean()) / max(1e-8, float(advantages.std()))
+        old_values = np.concatenate(value_chunks, axis=0)
+        policy_indices = np.concatenate(policy_index_chunks, axis=0)
+
+        # Normalize advantages per policy_index to prevent one bad policy's
+        # negative-mean skew from scaling down another policy's learning signal.
+        normalized_adv = np.empty_like(advantages)
+        for policy_index in np.unique(policy_indices):
+            mask = policy_indices == policy_index
+            group = advantages[mask]
+            scale = float(group.std())
+            if scale < 1e-8:
+                normalized_adv[mask] = group - group.mean()
+            else:
+                normalized_adv[mask] = (group - group.mean()) / scale
+        advantages = normalized_adv
 
         return {
             "obs": torch.as_tensor(obs, dtype=torch.float32, device=self.device),
@@ -205,6 +214,7 @@ class PPOEvolutionaryTrainer:
             ),
             "returns": torch.as_tensor(returns, dtype=torch.float32, device=self.device),
             "advantages": torch.as_tensor(advantages, dtype=torch.float32, device=self.device),
+            "old_values": torch.as_tensor(old_values, dtype=torch.float32, device=self.device),
         }
 
     def _ppo_update(self, trajectories: list[TrajectoryBatch]) -> dict[str, float]:
@@ -214,6 +224,7 @@ class PPOEvolutionaryTrainer:
         behavior_log_probs = tensors["behavior_log_probs"]
         returns = tensors["returns"]
         advantages = tensors["advantages"]
+        old_values = tensors["old_values"]
 
         sample_count = int(obs.shape[0])
         if sample_count == 0:
@@ -223,6 +234,8 @@ class PPOEvolutionaryTrainer:
                 "entropy": 0.0,
                 "approx_kl": 0.0,
             }
+
+        value_clip_epsilon = getattr(self.config.ppo, "value_clip_epsilon", None)
 
         self.network.train()
         total_policy_loss = 0.0
@@ -243,8 +256,10 @@ class PPOEvolutionaryTrainer:
                 batch_behavior_log_probs = behavior_log_probs[batch_indices]
                 batch_returns = returns[batch_indices]
                 batch_advantages = advantages[batch_indices]
+                batch_old_values = old_values[batch_indices]
 
                 logits, values = self.network(batch_obs, return_logits=True)
+                values = values.squeeze(-1)
                 distribution = Categorical(logits=logits)
                 current_log_probs = distribution.log_prob(batch_actions)
                 entropy = distribution.entropy().mean()
@@ -258,7 +273,22 @@ class PPOEvolutionaryTrainer:
                     1.0 + float(self.config.ppo.clip_epsilon),
                 ) * batch_advantages
                 policy_loss = -torch.minimum(unclipped, clipped).mean()
-                value_loss = F.mse_loss(values.squeeze(-1), batch_returns)
+
+                if value_clip_epsilon is not None:
+                    value_clipped = batch_old_values + torch.clamp(
+                        values - batch_old_values,
+                        -float(value_clip_epsilon),
+                        float(value_clip_epsilon),
+                    )
+                    value_loss_unclipped = (values - batch_returns).pow(2)
+                    value_loss_clipped = (value_clipped - batch_returns).pow(2)
+                    value_loss = 0.5 * torch.maximum(
+                        value_loss_unclipped,
+                        value_loss_clipped,
+                    ).mean()
+                else:
+                    value_loss = F.mse_loss(values, batch_returns)
+
                 loss = (
                     policy_loss
                     + float(self.config.ppo.value_coef) * value_loss
@@ -308,15 +338,14 @@ class PPOEvolutionaryTrainer:
         max_steps = self.config.rollout.max_steps
 
         tasks = []
-        for policy_index in range(len(population)):
-            for episode_offset in range(episodes_per_policy):
-                task_seed = (
-                    int(seed_start)
-                    + generation_index * len(population) * episodes_per_policy
-                    + policy_index * episodes_per_policy
-                    + episode_offset
-                )
-                tasks.append((policy_index, task_seed))
+        for episode_offset in range(episodes_per_policy):
+            shared_seed = (
+                int(seed_start)
+                + generation_index * episodes_per_policy
+                + episode_offset
+            )
+            for policy_index in range(len(population)):
+                tasks.append((policy_index, shared_seed))
 
         trajectories: list[TrajectoryBatch] = []
         if int(workers) <= 1:
@@ -389,17 +418,28 @@ class PPOEvolutionaryTrainer:
         self,
         *,
         generations: int,
-        population_size: int,
+        population_size: int | None = None,
         workers: int | None = None,
         seed_start: int = 21,
         save_path: str | Path | None = None,
     ) -> list[dict[str, Any]]:
         if int(generations) <= 0:
             raise ValueError("generations must be positive.")
-        if int(population_size) <= 0:
+
+        resolved_population_size = int(
+            population_size
+            if population_size is not None
+            else self.config.evolution.population_size
+        )
+        if resolved_population_size <= 0:
             raise ValueError("population_size must be positive.")
+        population_size = resolved_population_size
 
         worker_count = int(workers or self.config.rollout.workers)
+        total_generations = int(generations)
+        base_learning_rate = float(self.config.ppo.learning_rate)
+        lr_anneal = bool(getattr(self.config.ppo, "lr_anneal", False))
+
         self.metrics_history = []
         self.best_fitness = float("-inf")
         self.best_distance = float("-inf")
@@ -423,12 +463,22 @@ class PPOEvolutionaryTrainer:
             )
 
         try:
-            for generation_index in range(int(generations)):
+            for generation_index in range(total_generations):
                 generation_number = generation_index + 1
+
+                if lr_anneal and total_generations > 1:
+                    progress = generation_index / max(1, total_generations - 1)
+                    current_lr = max(base_learning_rate * (1.0 - progress), 1e-6)
+                else:
+                    current_lr = base_learning_rate
+                for param_group in self.optimizer.param_groups:
+                    param_group["lr"] = current_lr
+
                 if self.verbose:
                     print(
                         f"[ppo-evolutionary] generation={generation_number} "
-                        f"population={population_size} workers={worker_count}",
+                        f"population={population_size} workers={worker_count} "
+                        f"lr={current_lr:.2e}",
                         flush=True,
                     )
 

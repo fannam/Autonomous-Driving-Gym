@@ -116,6 +116,11 @@ class RewardConfig:
     low_speed_threshold_multiplier: float = 1.2
     collision_penalty: float = 5.0
     offroad_penalty: float = 5.0
+    lane_change_reward: float = 0.0
+    lane_change_cooldown: int = 10
+    overtake_reward: float = 0.0
+    overtake_range: float = 60.0
+    overtake_clearance: float = 0.0
 
     @classmethod
     def from_dict(cls, raw_config: dict | None = None) -> "RewardConfig":
@@ -128,7 +133,7 @@ class NetworkConfig:
     downsample_channels: int = 96
     latent_dim: int = 384
     residual_blocks: int = 10
-    dropout_p: float = 0.1
+    dropout_p: float = 0.2
 
     @classmethod
     def from_dict(cls, raw_config: dict | None = None) -> "NetworkConfig":
@@ -156,8 +161,10 @@ class PPOConfig:
     minibatch_size: int = 128
     entropy_coef: float = 0.01
     value_coef: float = 0.5
+    value_clip_epsilon: float | None = 0.2
     max_grad_norm: float = 0.5
     target_kl: float = 0.02
+    lr_anneal: bool = True
 
     @classmethod
     def from_dict(cls, raw_config: dict | None = None) -> "PPOConfig":
@@ -166,9 +173,10 @@ class PPOConfig:
 
 @dataclass(frozen=True)
 class EvolutionConfig:
+    population_size: int = 4
     elite_fraction: float = 0.25
-    mutation_std: float = 0.02
-    initial_population_noise_std: float = 0.02
+    mutation_std: float = 0.1
+    initial_population_noise_std: float = 0.1
 
     @classmethod
     def from_dict(cls, raw_config: dict | None = None) -> "EvolutionConfig":
@@ -226,6 +234,8 @@ class PPOEvolutionaryConfig:
             raise ValueError("evolution.elite_fraction must be positive.")
         if float(self.evolution.mutation_std) < 0.0:
             raise ValueError("evolution.mutation_std must be non-negative.")
+        if int(self.evolution.population_size) <= 0:
+            raise ValueError("evolution.population_size must be positive.")
 
     @classmethod
     def from_dict(

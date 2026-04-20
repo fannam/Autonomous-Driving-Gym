@@ -112,7 +112,7 @@ class ActorCriticNetwork(nn.Module):
         downsample_channels: int = 96,
         latent_dim: int = 384,
         residual_blocks: int = 10,
-        dropout_p: float = 0.1,
+        dropout_p: float = 0.2,
     ) -> None:
         super().__init__()
         self.input_channels = int(input_channels)
@@ -196,6 +196,7 @@ class ActorCriticNetwork(nn.Module):
         self.value_head = nn.Linear(self.latent_dim, 1)
 
         self._initialize_weights()
+        self._initialize_heads()
 
     @staticmethod
     def _split_stage_blocks(total_blocks: int) -> tuple[int, int, int]:
@@ -220,6 +221,12 @@ class ActorCriticNetwork(nn.Module):
             elif isinstance(module, (nn.GroupNorm, nn.LayerNorm)):
                 nn.init.ones_(module.weight)
                 nn.init.zeros_(module.bias)
+
+    def _initialize_heads(self) -> None:
+        nn.init.orthogonal_(self.policy_head.weight, gain=0.01)
+        nn.init.zeros_(self.policy_head.bias)
+        nn.init.orthogonal_(self.value_head.weight, gain=1.0)
+        nn.init.zeros_(self.value_head.bias)
 
     def forward_features(self, obs: torch.Tensor) -> torch.Tensor:
         x = self.stem(obs)

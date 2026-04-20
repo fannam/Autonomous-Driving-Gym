@@ -16,7 +16,7 @@ except ModuleNotFoundError:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train the PPO-evolutionary highway agent.")
     parser.add_argument("--generations", type=int, default=1)
-    parser.add_argument("--population-size", type=int, default=4)
+    parser.add_argument("--population-size", type=int, default=None)
     parser.add_argument("--workers", type=int, default=None)
     parser.add_argument("--config-path", type=str, default=None)
     parser.add_argument("--device", type=str, default="auto")

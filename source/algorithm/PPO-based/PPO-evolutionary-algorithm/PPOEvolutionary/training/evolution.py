@@ -10,7 +10,7 @@ import torch
 from ..core.types import TrajectoryBatch
 
 
-MUTABLE_HEAD_PREFIXES = ("policy_head.", "value_head.")
+MUTABLE_HEAD_PREFIXES = ("policy_head.",)
 
 
 @dataclass(frozen=True)
@@ -63,6 +63,10 @@ def mutate_state_dict(
     mutation_std: float,
     seed: int | None = None,
 ) -> dict[str, torch.Tensor]:
+    # ``mutation_std`` is a *relative* multiplier: noise std per tensor is
+    # ``mutation_std * tensor.std()``. This keeps perturbations proportional to
+    # current weight magnitude so small-gain inits (orthogonal gain=0.01 on
+    # ``policy_head``) are not drowned by absolute noise.
     mutated = clone_state_dict(state_dict)
     if float(mutation_std) == 0.0:
         return mutated
@@ -74,13 +78,20 @@ def mutate_state_dict(
     for name, value in mutated.items():
         if not _is_mutable_parameter(name, value):
             continue
+        flat = value.detach().float().reshape(-1)
+        if flat.numel() > 1:
+            tensor_std = float(flat.std(unbiased=False).item())
+        else:
+            tensor_std = float(flat.abs().item())
+        if not math.isfinite(tensor_std) or tensor_std < 1e-8:
+            tensor_std = 1e-3
         noise = torch.randn(
             value.shape,
             generator=generator,
             dtype=value.dtype,
             device=value.device,
         )
-        value.add_(noise * float(mutation_std))
+        value.add_(noise * float(mutation_std) * tensor_std)
     return mutated
 
 

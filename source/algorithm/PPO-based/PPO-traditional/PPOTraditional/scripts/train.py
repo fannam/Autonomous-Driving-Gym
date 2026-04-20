@@ -22,6 +22,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", type=str, default="auto")
     parser.add_argument("--seed-start", type=int, default=21)
     parser.add_argument("--save-path", type=str, default=None)
+    parser.add_argument(
+        "--resume-from",
+        type=str,
+        default=None,
+        help="Path to checkpoint .pt to resume training from (appends to metrics log).",
+    )
     parser.add_argument("--quiet", action="store_true")
     return parser.parse_args()
 
@@ -39,6 +45,7 @@ def main() -> None:
         steps_per_env=args.steps_per_env,
         seed_start=args.seed_start,
         save_path=args.save_path,
+        resume_from=args.resume_from,
     )
     checkpoint_path = trainer.save_checkpoint(args.save_path)
     print(

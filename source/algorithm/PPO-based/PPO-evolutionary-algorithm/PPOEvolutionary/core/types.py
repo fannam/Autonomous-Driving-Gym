@@ -32,7 +32,9 @@ class TrajectoryBatch:
     behavior_log_probs: np.ndarray
     rewards: np.ndarray
     dones: np.ndarray
+    values: np.ndarray
     last_obs: np.ndarray
+    last_value: float
     episode_metrics: EpisodeMetrics
     policy_index: int
     seed: int

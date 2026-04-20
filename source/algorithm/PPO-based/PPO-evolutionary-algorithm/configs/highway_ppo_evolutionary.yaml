@@ -56,17 +56,22 @@
         "low_speed_penalty": 1.0,
         "low_speed_threshold_multiplier": 1.2,
         "collision_penalty": 5.0,
-        "offroad_penalty": 5.0
+        "offroad_penalty": 5.0,
+        "lane_change_reward": 0.1,
+        "lane_change_cooldown": 5,
+        "overtake_reward": 2.0,
+        "overtake_range": 60.0,
+        "overtake_clearance": 0.0
       },
       "network": {
         "stem_channels": 48,
         "downsample_channels": 96,
         "latent_dim": 384,
         "residual_blocks": 10,
-        "dropout_p": 0.1
+        "dropout_p": 0.0
       },
       "rollout": {
-        "episodes_per_policy": 1,
+        "episodes_per_policy": 3,
         "workers": 2,
         "max_steps": null
       },
@@ -79,13 +84,16 @@
         "minibatch_size": 128,
         "entropy_coef": 0.01,
         "value_coef": 0.5,
+        "value_clip_epsilon": 0.2,
         "max_grad_norm": 0.5,
-        "target_kl": 0.02
+        "target_kl": 0.02,
+        "lr_anneal": true
       },
       "evolution": {
+        "population_size": 4,
         "elite_fraction": 0.25,
-        "mutation_std": 0.02,
-        "initial_population_noise_std": 0.02
+        "mutation_std": 0.1,
+        "initial_population_noise_std": 0.1
       },
       "logging": {
         "metrics_path": "outputs/ppo_evolutionary_metrics.jsonl"
@@ -101,7 +109,12 @@
         "low_speed_penalty": 1.0,
         "low_speed_threshold_multiplier": 1.2,
         "collision_penalty": 5.0,
-        "offroad_penalty": 5.0
+        "offroad_penalty": 5.0,
+        "lane_change_reward": 0.1,
+        "lane_change_cooldown": 5,
+        "overtake_reward": 2.0,
+        "overtake_range": 60.0,
+        "overtake_clearance": 0.0
       },
       "network": {
         "stem_channels": 48,
@@ -124,13 +137,16 @@
         "minibatch_size": 128,
         "entropy_coef": 0.01,
         "value_coef": 0.5,
+        "value_clip_epsilon": 0.2,
         "max_grad_norm": 0.5,
-        "target_kl": 0.02
+        "target_kl": 0.02,
+        "lr_anneal": false
       },
       "evolution": {
+        "population_size": 4,
         "elite_fraction": 0.25,
-        "mutation_std": 0.02,
-        "initial_population_noise_std": 0.02
+        "mutation_std": 0.1,
+        "initial_population_noise_std": 0.1
       },
       "logging": {
         "metrics_path": "outputs/ppo_evolutionary_eval_metrics.jsonl"

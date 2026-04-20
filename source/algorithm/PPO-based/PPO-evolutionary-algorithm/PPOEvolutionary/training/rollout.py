@@ -52,6 +52,7 @@ def run_episode(
     behavior_log_probs: list[float] = []
     rewards: list[float] = []
     dones: list[bool] = []
+    values: list[float] = []
     speed_sum_mps = 0.0
     normalized_speed_sum = 0.0
     raw_env_reward_sum = 0.0
@@ -69,7 +70,10 @@ def run_episode(
 
         obs_array = np.asarray(obs, dtype=np.float32)
         with torch.no_grad():
-            logits, _ = network(_prepare_observation(obs_array, device_obj), return_logits=True)
+            logits, value = network(
+                _prepare_observation(obs_array, device_obj),
+                return_logits=True,
+            )
         action, log_prob = _select_action(logits, deterministic=deterministic)
 
         next_obs, reward, terminated, truncated, episode_info = env.step(action)
@@ -81,6 +85,7 @@ def run_episode(
         behavior_log_probs.append(float(log_prob))
         rewards.append(float(reward))
         dones.append(bool(terminated or truncated))
+        values.append(float(value.squeeze().item()))
         speed_sum_mps += float(episode_info.get("forward_speed", 0.0))
         normalized_speed_sum += float(episode_info.get("normalized_speed", 0.0))
         raw_env_reward_sum += float(episode_info.get("raw_env_reward", 0.0))
@@ -90,6 +95,12 @@ def run_episode(
         step_count += 1
 
     last_obs = np.asarray(obs, dtype=np.float32)
+    with torch.no_grad():
+        _, last_value_tensor = network(
+            _prepare_observation(last_obs, device_obj),
+            return_logits=True,
+        )
+    last_value = float(last_value_tensor.squeeze().item())
     step_count_float = float(max(1, step_count))
     mean_speed_mps = speed_sum_mps / step_count_float
     metrics = EpisodeMetrics(
@@ -116,11 +127,59 @@ def run_episode(
         behavior_log_probs=np.asarray(behavior_log_probs, dtype=np.float32),
         rewards=np.asarray(rewards, dtype=np.float32),
         dones=np.asarray(dones, dtype=np.bool_),
+        values=np.asarray(values, dtype=np.float32),
         last_obs=last_obs.astype(np.float32, copy=False),
+        last_value=float(last_value),
         episode_metrics=metrics,
         policy_index=int(policy_index),
         seed=int(seed),
     )
+
+
+_WORKER_CACHE: dict | None = None
+
+
+def _get_or_build_worker_context(
+    *,
+    config_path: str | Path | None,
+    stage: str,
+    render_mode: str | None,
+) -> dict:
+    # Workers are spawned via ``mp.get_context("spawn")`` and reused across
+    # tasks, so module-level globals persist between calls within the same
+    # worker. Caching the env + network avoids rebuilding highway-env and
+    # re-allocating the CNN on every episode.
+    global _WORKER_CACHE
+    cache_key = (str(config_path), str(stage), render_mode)
+    if _WORKER_CACHE is not None and _WORKER_CACHE.get("key") == cache_key:
+        return _WORKER_CACHE
+
+    if _WORKER_CACHE is not None:
+        try:
+            _WORKER_CACHE["wrapped_env"].close()
+        except Exception:
+            pass
+        _WORKER_CACHE = None
+
+    raw_config = load_runtime_config(config_path)
+    stage_config = load_stage_config(stage, raw_config=raw_config)
+    env = init_env(
+        seed=0,
+        stage=stage,
+        config_path=config_path,
+        render_mode=render_mode,
+    )
+    wrapped_env = EvolutionaryRewardWrapper(env, stage_config.reward)
+    network = build_actor_critic(stage_config)
+    network.to(torch.device("cpu"))
+    network.eval()
+    _WORKER_CACHE = {
+        "key": cache_key,
+        "stage_config": stage_config,
+        "wrapped_env": wrapped_env,
+        "network": network,
+    }
+    return _WORKER_CACHE
 
 
 def run_rollout_episode(
@@ -138,33 +197,27 @@ def run_rollout_episode(
     torch.manual_seed(int(seed))
     np.random.seed(int(seed))
 
-    raw_config = load_runtime_config(config_path)
-    stage_config = load_stage_config(stage, raw_config=raw_config)
-    env = init_env(
-        seed=int(seed),
-        stage=stage,
+    context = _get_or_build_worker_context(
         config_path=config_path,
+        stage=stage,
         render_mode=render_mode,
     )
-    wrapped_env = EvolutionaryRewardWrapper(env, stage_config.reward)
-    network = build_actor_critic(stage_config)
+    stage_config = context["stage_config"]
+    wrapped_env = context["wrapped_env"]
+    network = context["network"]
     network.load_state_dict(policy_state_dict)
-    network.to(torch.device("cpu"))
     network.eval()
 
-    try:
-        return run_episode(
-            wrapped_env,
-            network,
-            device="cpu",
-            deterministic=bool(deterministic),
-            policy_index=int(policy_index),
-            seed=int(seed),
-            max_steps=max_steps if max_steps is not None else stage_config.rollout.max_steps,
-            render=bool(render_mode == "human"),
-        )
-    finally:
-        wrapped_env.close()
+    return run_episode(
+        wrapped_env,
+        network,
+        device="cpu",
+        deterministic=bool(deterministic),
+        policy_index=int(policy_index),
+        seed=int(seed),
+        max_steps=max_steps if max_steps is not None else stage_config.rollout.max_steps,
+        render=bool(render_mode == "human"),
+    )
 
 
 __all__ = ["run_episode", "run_rollout_episode"]

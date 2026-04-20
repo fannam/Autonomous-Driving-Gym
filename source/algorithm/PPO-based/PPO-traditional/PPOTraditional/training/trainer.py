@@ -88,6 +88,45 @@ class PPOTraditionalTrainer:
         metrics_path.write_text("", encoding="utf-8")
         return metrics_path
 
+    def _ensure_metrics_log(self) -> Path:
+        """Đảm bảo file metrics tồn tại nhưng KHÔNG xoá nội dung — dùng cho resume."""
+        metrics_path = self._resolve_artifact_path(self.config.logging.metrics_path)
+        metrics_path.parent.mkdir(parents=True, exist_ok=True)
+        if not metrics_path.exists():
+            metrics_path.write_text("", encoding="utf-8")
+        return metrics_path
+
+    def load_for_resume(self, checkpoint_path: str | Path) -> dict[str, Any]:
+        """Load checkpoint vào trainer để chuẩn bị resume training.
+
+        Khôi phục: network weights (latest), best_policy snapshot, best/EMA
+        fitness/distance, metrics_history, current_update, total_timesteps.
+        Không động vào config — caller phải dùng cùng config với lúc train trước
+        (hoặc chấp nhận khác biệt).
+        """
+        checkpoint = self.load_checkpoint(checkpoint_path)
+        latest_state = checkpoint.get("latest_policy_state_dict")
+        if latest_state is None:
+            raise KeyError(
+                f"Checkpoint at {checkpoint_path} thiếu 'latest_policy_state_dict'."
+            )
+        self.network.load_state_dict(latest_state)
+        self.network.to(self.device)
+        self.network.eval()
+
+        best_state = checkpoint.get("best_policy_state_dict", latest_state)
+        self.best_policy_state_dict = _clone_state_dict(best_state)
+        self.best_fitness = float(checkpoint.get("best_fitness", float("-inf")))
+        self.best_distance = float(checkpoint.get("best_distance", float("-inf")))
+        # Các trường này có thể không có trong checkpoint cũ → fallback an toàn.
+        self.best_ema_fitness = float(checkpoint.get("best_ema_fitness", self.best_fitness))
+        ema_value = checkpoint.get("ema_fitness")
+        self.ema_fitness = float(ema_value) if ema_value is not None else None
+        self.metrics_history = list(checkpoint.get("metrics_history", []))
+        self.current_update = int(checkpoint.get("update", len(self.metrics_history)))
+        self.total_timesteps = int(checkpoint.get("total_timesteps", 0))
+        return checkpoint
+
     def _append_metrics_log(self, summary: UpdateSummary) -> None:
         metrics_path = self._resolve_artifact_path(self.config.logging.metrics_path)
         with metrics_path.open("a", encoding="utf-8") as handle:
@@ -275,6 +314,10 @@ class PPOTraditionalTrainer:
             "metrics_history": list(self.metrics_history),
             "best_fitness": float(self.best_fitness),
             "best_distance": float(self.best_distance),
+            "best_ema_fitness": float(self.best_ema_fitness),
+            "ema_fitness": (
+                float(self.ema_fitness) if self.ema_fitness is not None else None
+            ),
         }
         torch.save(checkpoint, output_path)
         return output_path
@@ -293,26 +336,47 @@ class PPOTraditionalTrainer:
         steps_per_env: int | None = None,
         seed_start: int = 21,
         save_path: str | Path | None = None,
+        resume_from: str | Path | None = None,
     ) -> list[dict[str, Any]]:
+        """Train PPO.
+
+        ``resume_from``: nếu cung cấp, load checkpoint để tiếp tục training:
+        khôi phục weights, best snapshot, metrics history, current_update,
+        total_timesteps. ``updates`` là số update MỚI thêm vào (không phải tổng).
+        Metrics file sẽ được append thay vì truncate.
+        """
         if int(updates) <= 0:
             raise ValueError("updates must be positive.")
 
         resolved_n_envs = int(n_envs or self.config.rollout.n_envs)
         resolved_steps_per_env = int(steps_per_env or self.config.rollout.steps_per_env)
-        self.metrics_history = []
-        self.best_fitness = float("-inf")
-        self.best_distance = float("-inf")
-        self.best_ema_fitness = float("-inf")
-        self.ema_fitness = None
-        self.best_policy_state_dict = _clone_state_dict(self.network.state_dict())
-        self.current_update = 0
-        self.total_timesteps = 0
-        self._reset_metrics_log()
+
+        if resume_from is not None:
+            self.load_for_resume(resume_from)
+            self._ensure_metrics_log()
+            if self.verbose:
+                print(
+                    f"[ppo-traditional] resume from update={self.current_update} "
+                    f"total_timesteps={self.total_timesteps} "
+                    f"best_fitness={self.best_fitness:.4f}",
+                    flush=True,
+                )
+        else:
+            self.metrics_history = []
+            self.best_fitness = float("-inf")
+            self.best_distance = float("-inf")
+            self.best_ema_fitness = float("-inf")
+            self.ema_fitness = None
+            self.best_policy_state_dict = _clone_state_dict(self.network.state_dict())
+            self.current_update = 0
+            self.total_timesteps = 0
+            self._reset_metrics_log()
 
         base_learning_rate = float(self.config.ppo.learning_rate)
         total_updates = int(updates)
         lr_anneal = bool(getattr(self.config.ppo, "lr_anneal", False))
         ema_alpha = 0.1
+        start_update = int(self.current_update)
 
         collector = VectorizedRolloutCollector(
             config_path=self.config_path,
@@ -323,9 +387,12 @@ class PPOTraditionalTrainer:
         )
 
         try:
-            for update_index in range(total_updates):
+            for local_index in range(total_updates):
+                # update_index là chỉ số toàn cục (resume-aware), local_index dùng cho LR anneal
+                # — anneal tính trong phạm vi session hiện tại để mỗi resume có schedule riêng.
+                update_index = start_update + local_index
                 if lr_anneal and total_updates > 1:
-                    progress = update_index / max(1, total_updates - 1)
+                    progress = local_index / max(1, total_updates - 1)
                     current_lr = base_learning_rate * (1.0 - progress)
                     current_lr = max(current_lr, 1e-6)
                 else:

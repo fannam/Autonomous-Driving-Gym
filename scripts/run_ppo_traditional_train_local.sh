@@ -82,7 +82,7 @@ CHECKPOINT_PATH="${CHECKPOINT_PATH:-$OUTPUT_DIR/ppo_traditional_highway_local.pt
 METRICS_PATH="${METRICS_PATH:-$OUTPUT_DIR/ppo_traditional_metrics.jsonl}"
 EVAL_METRICS_PATH="${EVAL_METRICS_PATH:-$OUTPUT_DIR/ppo_traditional_eval_metrics.jsonl}"
 
-UPDATES="${UPDATES:-30}"
+UPDATES="${UPDATES:-100}"
 N_ENVS="${N_ENVS:-16}"
 ENV_CAP="${ENV_CAP:-16}"
 CPU_RESERVE="${CPU_RESERVE:-2}"
