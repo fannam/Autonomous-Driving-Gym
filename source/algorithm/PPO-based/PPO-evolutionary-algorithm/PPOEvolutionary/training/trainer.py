@@ -217,7 +217,12 @@ class PPOEvolutionaryTrainer:
             "old_values": torch.as_tensor(old_values, dtype=torch.float32, device=self.device),
         }
 
-    def _ppo_update(self, trajectories: list[TrajectoryBatch]) -> dict[str, float]:
+    def _ppo_update(
+        self,
+        trajectories: list[TrajectoryBatch],
+        *,
+        elite_reference_state_dict: dict[str, torch.Tensor] | None = None,
+    ) -> dict[str, float]:
         tensors = self._prepare_training_tensors(trajectories)
         obs = tensors["obs"]
         actions = tensors["actions"]
@@ -233,15 +238,26 @@ class PPOEvolutionaryTrainer:
                 "value_loss": 0.0,
                 "entropy": 0.0,
                 "approx_kl": 0.0,
+                "distill_loss": 0.0,
             }
 
         value_clip_epsilon = getattr(self.config.ppo, "value_clip_epsilon", None)
+        distill_coef = float(getattr(self.config.ppo, "distill_coef", 0.0))
+
+        reference_network = None
+        if distill_coef > 0.0 and elite_reference_state_dict is not None:
+            reference_network = build_actor_critic(self.config).to(self.device)
+            reference_network.load_state_dict(elite_reference_state_dict)
+            reference_network.eval()
+            for parameter in reference_network.parameters():
+                parameter.requires_grad_(False)
 
         self.network.train()
         total_policy_loss = 0.0
         total_value_loss = 0.0
         total_entropy = 0.0
         total_kl = 0.0
+        total_distill = 0.0
         total_items = 0
 
         for _ in range(int(self.config.ppo.ppo_epochs)):
@@ -289,10 +305,30 @@ class PPOEvolutionaryTrainer:
                 else:
                     value_loss = F.mse_loss(values, batch_returns)
 
+                if reference_network is not None:
+                    with torch.no_grad():
+                        reference_logits, _ = reference_network(
+                            batch_obs,
+                            return_logits=True,
+                        )
+                    reference_log_probs = F.log_softmax(reference_logits, dim=-1)
+                    reference_probs = reference_log_probs.exp()
+                    current_all_log_probs = F.log_softmax(logits, dim=-1)
+                    # KL(elite || PPO): pulls PPO policy toward the elite head
+                    # wherever the elite is confident; gradient flows only
+                    # through PPO.
+                    distill_loss = (
+                        reference_probs
+                        * (reference_log_probs - current_all_log_probs)
+                    ).sum(dim=-1).mean()
+                else:
+                    distill_loss = torch.zeros((), device=self.device)
+
                 loss = (
                     policy_loss
                     + float(self.config.ppo.value_coef) * value_loss
                     - float(self.config.ppo.entropy_coef) * entropy
+                    + distill_coef * distill_loss
                 )
 
                 self.optimizer.zero_grad()
@@ -311,6 +347,7 @@ class PPOEvolutionaryTrainer:
                 total_value_loss += float(value_loss.detach().item()) * batch_items
                 total_entropy += float(entropy.detach().item()) * batch_items
                 total_kl += float(approx_kl.item()) * batch_items
+                total_distill += float(distill_loss.detach().item()) * batch_items
                 epoch_kl_sum += float(approx_kl.item()) * batch_items
 
             mean_epoch_kl = epoch_kl_sum / max(1, epoch_items)
@@ -323,6 +360,7 @@ class PPOEvolutionaryTrainer:
             "value_loss": total_value_loss / max(1, total_items),
             "entropy": total_entropy / max(1, total_items),
             "approx_kl": total_kl / max(1, total_items),
+            "distill_loss": total_distill / max(1, total_items),
         }
 
     def _collect_generation_rollouts(
@@ -447,11 +485,13 @@ class PPOEvolutionaryTrainer:
         self.current_generation = 0
         self._reset_metrics_log()
 
+        antithetic = bool(getattr(self.config.evolution, "antithetic", True))
         population = initialize_population(
             clone_state_dict(self.network.state_dict()),
             population_size=int(population_size),
             mutation_std=float(self.config.evolution.initial_population_noise_std),
             seed=int(seed_start),
+            antithetic=antithetic,
         )
 
         rollout_executor: ProcessPoolExecutor | None = None
@@ -510,7 +550,12 @@ class PPOEvolutionaryTrainer:
                     self.best_policy_state_dict = best_policy_state
 
                 ppo_started_at = perf_counter()
-                ppo_metrics = self._ppo_update(trajectories)
+                distill_coef = float(getattr(self.config.ppo, "distill_coef", 0.0))
+                elite_reference = best_policy_state if distill_coef > 0.0 else None
+                ppo_metrics = self._ppo_update(
+                    trajectories,
+                    elite_reference_state_dict=elite_reference,
+                )
                 ppo_duration_s = perf_counter() - ppo_started_at
 
                 episode_metrics = [trajectory.episode_metrics for trajectory in trajectories]
@@ -545,6 +590,7 @@ class PPOEvolutionaryTrainer:
                     value_loss=float(ppo_metrics["value_loss"]),
                     entropy=float(ppo_metrics["entropy"]),
                     approx_kl=float(ppo_metrics["approx_kl"]),
+                    distill_loss=float(ppo_metrics.get("distill_loss", 0.0)),
                 )
                 self.metrics_history.append(summary.to_dict())
                 self._append_metrics_log(summary)
@@ -570,6 +616,7 @@ class PPOEvolutionaryTrainer:
                         f"offroad_rate={summary.offroad_rate:.3f} "
                         f"policy_loss={summary.policy_loss:.4f} "
                         f"value_loss={summary.value_loss:.4f} "
+                        f"distill_loss={summary.distill_loss:.4f} "
                         f"samples={sample_count} "
                         f"rollout_s={rollout_duration_s:.2f} "
                         f"ppo_s={ppo_duration_s:.2f} "
@@ -585,6 +632,7 @@ class PPOEvolutionaryTrainer:
                     mutation_std=float(self.config.evolution.mutation_std),
                     ppo_state_dict=clone_state_dict(self.network.state_dict()),
                     seed=int(seed_start) + 1000 + generation_index * max(1, population_size),
+                    antithetic=antithetic,
                 )
                 population = evolution_step.population
         finally:

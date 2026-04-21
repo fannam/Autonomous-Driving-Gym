@@ -65,6 +65,7 @@ class GenerationSummary:
     value_loss: float
     entropy: float
     approx_kl: float
+    distill_loss: float = 0.0
 
     def to_dict(self) -> dict:
         return asdict(self)

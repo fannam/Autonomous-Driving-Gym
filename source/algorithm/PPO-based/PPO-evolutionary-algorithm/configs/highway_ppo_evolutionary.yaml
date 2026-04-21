@@ -71,7 +71,7 @@
         "dropout_p": 0.0
       },
       "rollout": {
-        "episodes_per_policy": 3,
+        "episodes_per_policy": 5,
         "workers": 2,
         "max_steps": null
       },
@@ -87,13 +87,15 @@
         "value_clip_epsilon": 0.2,
         "max_grad_norm": 0.5,
         "target_kl": 0.02,
-        "lr_anneal": true
+        "lr_anneal": true,
+        "distill_coef": 0.05
       },
       "evolution": {
-        "population_size": 4,
+        "population_size": 16,
         "elite_fraction": 0.25,
         "mutation_std": 0.1,
-        "initial_population_noise_std": 0.1
+        "initial_population_noise_std": 0.1,
+        "antithetic": true
       },
       "logging": {
         "metrics_path": "outputs/ppo_evolutionary_metrics.jsonl"
@@ -140,13 +142,15 @@
         "value_clip_epsilon": 0.2,
         "max_grad_norm": 0.5,
         "target_kl": 0.02,
-        "lr_anneal": false
+        "lr_anneal": false,
+        "distill_coef": 0.0
       },
       "evolution": {
-        "population_size": 4,
+        "population_size": 16,
         "elite_fraction": 0.25,
         "mutation_std": 0.1,
-        "initial_population_noise_std": 0.1
+        "initial_population_noise_std": 0.1,
+        "antithetic": true
       },
       "logging": {
         "metrics_path": "outputs/ppo_evolutionary_eval_metrics.jsonl"

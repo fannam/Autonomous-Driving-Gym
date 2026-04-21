@@ -62,11 +62,16 @@ def mutate_state_dict(
     *,
     mutation_std: float,
     seed: int | None = None,
+    mutation_sign: float = 1.0,
 ) -> dict[str, torch.Tensor]:
     # ``mutation_std`` is a *relative* multiplier: noise std per tensor is
     # ``mutation_std * tensor.std()``. This keeps perturbations proportional to
     # current weight magnitude so small-gain inits (orthogonal gain=0.01 on
     # ``policy_head``) are not drowned by absolute noise.
+    #
+    # ``mutation_sign`` enables antithetic sampling: pass ``+1`` and ``-1`` with
+    # the same ``seed`` to produce a mirrored pair of offspring from one parent,
+    # which halves variance in fitness estimation with small populations.
     mutated = clone_state_dict(state_dict)
     if float(mutation_std) == 0.0:
         return mutated
@@ -91,7 +96,7 @@ def mutate_state_dict(
             dtype=value.dtype,
             device=value.device,
         )
-        value.add_(noise * float(mutation_std) * tensor_std)
+        value.add_(noise * float(mutation_std) * tensor_std * float(mutation_sign))
     return mutated
 
 
@@ -101,18 +106,42 @@ def initialize_population(
     population_size: int,
     mutation_std: float,
     seed: int = 0,
+    antithetic: bool = True,
 ) -> list[dict[str, torch.Tensor]]:
     if int(population_size) <= 0:
         raise ValueError("population_size must be positive.")
     population = [clone_state_dict(base_state_dict)]
-    for index in range(1, int(population_size)):
-        population.append(
-            mutate_state_dict(
-                base_state_dict,
-                mutation_std=float(mutation_std),
-                seed=int(seed) + index,
+    index = 1
+    while index < int(population_size):
+        pair_seed = int(seed) + index
+        if antithetic and index + 1 < int(population_size):
+            population.append(
+                mutate_state_dict(
+                    base_state_dict,
+                    mutation_std=float(mutation_std),
+                    seed=pair_seed,
+                    mutation_sign=+1.0,
+                )
             )
-        )
+            population.append(
+                mutate_state_dict(
+                    base_state_dict,
+                    mutation_std=float(mutation_std),
+                    seed=pair_seed,
+                    mutation_sign=-1.0,
+                )
+            )
+            index += 2
+        else:
+            population.append(
+                mutate_state_dict(
+                    base_state_dict,
+                    mutation_std=float(mutation_std),
+                    seed=pair_seed,
+                    mutation_sign=+1.0,
+                )
+            )
+            index += 1
     return population
 
 
@@ -179,6 +208,7 @@ def evolve_population(
     mutation_std: float,
     ppo_state_dict: dict[str, torch.Tensor],
     seed: int = 0,
+    antithetic: bool = True,
 ) -> EvolutionStepResult:
     if not population:
         raise ValueError("Population must not be empty.")
@@ -204,24 +234,53 @@ def evolve_population(
         for index in elite_indices
     ]
 
-    while len(new_population) < population_size:
-        parent_rank = (len(new_population) - elite_count) % elite_count
+    # Reserve the last slot for a fresh PPO clone; all other non-elite slots
+    # are filled via mutation. When ``antithetic`` is True, children are
+    # produced in ``(+eps, -eps)`` pairs from the same parent and shared seed
+    # to cancel fitness-estimation noise.
+    offspring_slots = population_size - elite_count - 1
+    offspring: list[dict[str, torch.Tensor]] = []
+    pair_index = 0
+    while len(offspring) < offspring_slots:
+        parent_rank = pair_index % elite_count
         parent_index = elite_indices[parent_rank]
-        child_seed = int(seed) + len(new_population)
         synced_parent = sync_shared_parameters(
             population[parent_index],
             shared_state_dict=ppo_state_dict,
         )
-        new_population.append(
-            mutate_state_dict(
-                synced_parent,
-                mutation_std=float(mutation_std),
-                seed=child_seed,
+        child_seed = int(seed) + pair_index
+        remaining = offspring_slots - len(offspring)
+        if antithetic and remaining >= 2:
+            offspring.append(
+                mutate_state_dict(
+                    synced_parent,
+                    mutation_std=float(mutation_std),
+                    seed=child_seed,
+                    mutation_sign=+1.0,
+                )
             )
-        )
+            offspring.append(
+                mutate_state_dict(
+                    synced_parent,
+                    mutation_std=float(mutation_std),
+                    seed=child_seed,
+                    mutation_sign=-1.0,
+                )
+            )
+        else:
+            offspring.append(
+                mutate_state_dict(
+                    synced_parent,
+                    mutation_std=float(mutation_std),
+                    seed=child_seed,
+                    mutation_sign=+1.0,
+                )
+            )
+        pair_index += 1
 
+    new_population.extend(offspring)
+    new_population.append(clone_state_dict(ppo_state_dict))
     injected_index = population_size - 1
-    new_population[injected_index] = clone_state_dict(ppo_state_dict)
     return EvolutionStepResult(
         population=new_population,
         elite_indices=elite_indices,

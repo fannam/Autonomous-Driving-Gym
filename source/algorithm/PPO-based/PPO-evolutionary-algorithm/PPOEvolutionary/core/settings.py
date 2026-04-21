@@ -165,6 +165,7 @@ class PPOConfig:
     max_grad_norm: float = 0.5
     target_kl: float = 0.02
     lr_anneal: bool = True
+    distill_coef: float = 0.0
 
     @classmethod
     def from_dict(cls, raw_config: dict | None = None) -> "PPOConfig":
@@ -173,10 +174,11 @@ class PPOConfig:
 
 @dataclass(frozen=True)
 class EvolutionConfig:
-    population_size: int = 4
+    population_size: int = 16
     elite_fraction: float = 0.25
     mutation_std: float = 0.1
     initial_population_noise_std: float = 0.1
+    antithetic: bool = True
 
     @classmethod
     def from_dict(cls, raw_config: dict | None = None) -> "EvolutionConfig":
